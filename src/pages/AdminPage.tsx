@@ -185,6 +185,7 @@ export const AdminPage: React.FC<AdminPageProps> = ({
     setTickets(adminStore.getTickets());
     setPackages(adminStore.getPackages());
     setGateways(adminStore.getGateways());
+    setLicenseStatus(licenseService.getLicenseState());
     const freshEmails = adminStore.getEmailSettings();
     setEmailSettings(freshEmails);
     setAdminEmailInput(freshEmails.adminEmail);
@@ -199,6 +200,20 @@ export const AdminPage: React.FC<AdminPageProps> = ({
 
   useEffect(() => {
     reloadData();
+    adminStore.fetchFromDatabase();
+
+    const handleStoreSynced = () => {
+      reloadData();
+    };
+    const handleOrdersUpdate = () => {
+      setOrders(adminStore.getOrders());
+    };
+    const handleTicketsUpdate = () => {
+      setTickets(adminStore.getTickets());
+    };
+    const handlePackagesUpdate = () => {
+      setPackages(adminStore.getPackages());
+    };
     const handleEmailUpdate = () => {
       setEmailSettings(adminStore.getEmailSettings());
       setEmailLogs(adminStore.getEmailLogs());
@@ -207,11 +222,26 @@ export const AdminPage: React.FC<AdminPageProps> = ({
       setCurrencySettings(adminStore.getCurrencySettings());
       setPackages(adminStore.getPackages());
     };
+    const handleLicenseUpdate = () => {
+      setLicenseStatus(licenseService.getLicenseState());
+    };
+
+    window.addEventListener('wc_store_synced', handleStoreSynced);
+    window.addEventListener('wc_orders_updated', handleOrdersUpdate);
+    window.addEventListener('wc_tickets_updated', handleTicketsUpdate);
+    window.addEventListener('wc_packages_updated', handlePackagesUpdate);
     window.addEventListener('wc_emails_updated', handleEmailUpdate);
     window.addEventListener('wc_currency_updated', handleCurrencyUpdate);
+    window.addEventListener('wheelclarify-license-updated', handleLicenseUpdate);
+
     return () => {
+      window.removeEventListener('wc_store_synced', handleStoreSynced);
+      window.removeEventListener('wc_orders_updated', handleOrdersUpdate);
+      window.removeEventListener('wc_tickets_updated', handleTicketsUpdate);
+      window.removeEventListener('wc_packages_updated', handlePackagesUpdate);
       window.removeEventListener('wc_emails_updated', handleEmailUpdate);
       window.removeEventListener('wc_currency_updated', handleCurrencyUpdate);
+      window.removeEventListener('wheelclarify-license-updated', handleLicenseUpdate);
     };
   }, []);
 

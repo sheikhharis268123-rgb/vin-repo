@@ -38,8 +38,18 @@ export const AdminLicenseSettings = ({ onLicenseChange }) => {
   const [copiedKey, setCopiedKey] = useState(false);
 
   useEffect(() => {
-    // Perform an initial verification check on mount to sync with server/cache
-    handleVerifyLicense(licenseKey, false, true);
+    const handleRemoteLicenseSync = () => {
+      const latestState = licenseService.getLicenseState();
+      setLicenseState(latestState);
+      if (latestState?.license_key) {
+        setLicenseKey(latestState.license_key);
+      }
+    };
+
+    window.addEventListener('wheelclarify-license-updated', handleRemoteLicenseSync);
+    return () => {
+      window.removeEventListener('wheelclarify-license-updated', handleRemoteLicenseSync);
+    };
   }, []);
 
   const calculateRemainingValidity = (expiresAt) => {
@@ -136,7 +146,7 @@ export const AdminLicenseSettings = ({ onLicenseChange }) => {
       setFeedback({
         type: result.state.valid ? 'success' : 'error',
         message: result.state.valid
-          ? 'License key saved to localStorage and server configuration (/api/save-license.php).'
+          ? 'License key saved directly to MySQL database (/api/app-store.php & /api/save-license.php).'
           : result.state.error || 'Saved key is invalid or suspended. Features are currently locked.',
       });
     } finally {

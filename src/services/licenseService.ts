@@ -17,13 +17,10 @@ export interface LicenseState {
   error: string | null;
 }
 
-const LICENSE_KEY_STORAGE = 'wheelclarify_license_key';
-const LICENSE_STATE_STORAGE = 'wheelclarify_license_state';
 const DEFAULT_PRO_KEY = 'WC-KEY-884920-PRO';
 
 /**
- * Local fallback evaluator used when PHP / backend server is unreachable
- * or during offline grace operation.
+ * Fallback evaluator used while waiting for `/api/app-store.php` or if offline
  */
 export function evaluateLicenseLocally(rawKey: string): LicenseState {
   const key = (rawKey || '').trim().toUpperCase();
@@ -78,7 +75,6 @@ export function evaluateLicenseLocally(rawKey: string): LicenseState {
     };
   }
 
-  // Partial tier keys (e.g. VIN-ONLY or PAY-ONLY)
   if (key.startsWith('WC-VINONLY-')) {
     const exp = new Date(Date.now() + 365 * 24 * 60 * 60 * 1000).toISOString();
     return {
@@ -115,7 +111,6 @@ export function evaluateLicenseLocally(rawKey: string): LicenseState {
     };
   }
 
-  // Standard WheelClarify Pro / Enterprise format: WC-KEY-XXXXXX-PRO or WC-PRO-...
   const isValidFormat =
     /^WC-[A-Z0-9]{2,10}-[A-Z0-9]{4,12}(-[A-Z0-9]{2,10})?$/.test(key) &&
     key.length >= 12;
@@ -153,53 +148,87 @@ export function evaluateLicenseLocally(rawKey: string): LicenseState {
   };
 }
 
+// In-memory state (hydrated from and persisted to `/api/app-store.php` MySQL backend)
+let memoryLicenseKey: string = DEFAULT_PRO_KEY;
+let memoryLicenseState: LicenseState = evaluateLicenseLocally(DEFAULT_PRO_KEY);
+
 export const licenseService = {
   getSavedLicenseKey(): string {
-    if (typeof window === 'undefined') return DEFAULT_PRO_KEY;
-    const saved = localStorage.getItem(LICENSE_KEY_STORAGE);
-    if (saved === null) {
-      // Pre-seed default Pro license so initial installation works out of the box
-      localStorage.setItem(LICENSE_KEY_STORAGE, DEFAULT_PRO_KEY);
-      return DEFAULT_PRO_KEY;
-    }
-    return saved;
-  },
-
-  saveLicenseKeyLocal(key: string): void {
-    if (typeof window === 'undefined') return;
-    localStorage.setItem(LICENSE_KEY_STORAGE, key.trim());
+    return memoryLicenseKey;
   },
 
   getLicenseState(): LicenseState {
-    if (typeof window === 'undefined') {
-      return evaluateLicenseLocally(DEFAULT_PRO_KEY);
-    }
-    const rawState = localStorage.getItem(LICENSE_STATE_STORAGE);
-    if (rawState) {
-      try {
-        const parsed = JSON.parse(rawState) as LicenseState;
-        if (parsed && typeof parsed.valid === 'boolean' && parsed.features) {
-          return parsed;
-        }
-      } catch {
-        // Ignore parse error and re-evaluate
-      }
-    }
-    const initialKey = this.getSavedLicenseKey();
-    const evaluated = evaluateLicenseLocally(initialKey);
-    localStorage.setItem(LICENSE_STATE_STORAGE, JSON.stringify(evaluated));
-    return evaluated;
+    return memoryLicenseState;
   },
 
-  saveLicenseStateLocal(state: LicenseState): void {
-    if (typeof window === 'undefined') return;
-    localStorage.setItem(LICENSE_STATE_STORAGE, JSON.stringify(state));
-    window.dispatchEvent(new CustomEvent('wheelclarify-license-updated', { detail: state }));
+  /**
+   * Called when `GET /api/app-store.php` returns `data.license_config`
+   */
+  hydrateFromAppStore(licenseConfig: any): void {
+    if (!licenseConfig || typeof licenseConfig !== 'object') return;
+    const key = String(licenseConfig.license_key || memoryLicenseKey || DEFAULT_PRO_KEY)
+      .trim()
+      .toUpperCase();
+    memoryLicenseKey = key;
+    memoryLicenseState = {
+      valid: Boolean(licenseConfig.valid),
+      status:
+        licenseConfig.status ||
+        (licenseConfig.valid ? 'Active' : key.includes('SUSPENDED') ? 'Suspended' : 'Invalid'),
+      license_key: key,
+      domain:
+        licenseConfig.domain ||
+        (typeof window !== 'undefined' ? window.location.hostname : 'localhost'),
+      plan: licenseConfig.plan || (licenseConfig.valid ? 'Pro Full-Stack License' : 'Unlicensed'),
+      expires_at: licenseConfig.expires_at || null,
+      checked_at: licenseConfig.checked_at || new Date().toISOString(),
+      cached: Boolean(licenseConfig.cached),
+      offline_grace: Boolean(licenseConfig.offline_grace),
+      features: {
+        vin_reports: Boolean(licenseConfig.features?.vin_reports),
+        payment_gateway: Boolean(licenseConfig.features?.payment_gateway),
+      },
+      error: licenseConfig.error || null,
+    };
+
+    if (typeof window !== 'undefined') {
+      window.dispatchEvent(
+        new CustomEvent('wheelclarify-license-updated', { detail: memoryLicenseState })
+      );
+    }
+  },
+
+  /**
+   * Persists the current `license_config` directly to `/api/app-store.php` (MySQL)
+   */
+  async persistLicenseToAppStore(state: LicenseState): Promise<void> {
+    memoryLicenseKey = state.license_key;
+    memoryLicenseState = state;
+    if (typeof window !== 'undefined') {
+      window.dispatchEvent(new CustomEvent('wheelclarify-license-updated', { detail: state }));
+    }
+
+    try {
+      await fetch('/api/app-store.php', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Accept: 'application/json',
+        },
+        body: JSON.stringify({
+          action: 'save_license_config',
+          license_key: state.license_key,
+          license_config: state,
+        }),
+      });
+    } catch {
+      // Non-blocking if endpoint temporarily unreachable
+    }
   },
 
   async verifyLicense(licenseKey: string, forceRefresh = false): Promise<LicenseState> {
     const cleanKey = (licenseKey || '').trim().toUpperCase();
-    this.saveLicenseKeyLocal(cleanKey);
+    memoryLicenseKey = cleanKey;
 
     try {
       const response = await fetch('/api/verify-license.php', {
@@ -238,24 +267,24 @@ export const licenseService = {
           },
           error: data.error || null,
         };
-        this.saveLicenseStateLocal(state);
+        await this.persistLicenseToAppStore(state);
         return state;
       }
     } catch {
-      // Remote endpoint unreachable — fall back gracefully to local validation
+      // Remote endpoint unreachable — fall back gracefully
     }
 
-    const fallbackState = {
+    const fallbackState: LicenseState = {
       ...evaluateLicenseLocally(cleanKey),
       offline_grace: true,
     };
-    this.saveLicenseStateLocal(fallbackState);
+    await this.persistLicenseToAppStore(fallbackState);
     return fallbackState;
   },
 
   async saveLicenseToServer(licenseKey: string): Promise<{ success: boolean; state: LicenseState }> {
     const cleanKey = (licenseKey || '').trim().toUpperCase();
-    this.saveLicenseKeyLocal(cleanKey);
+    memoryLicenseKey = cleanKey;
 
     try {
       const response = await fetch('/api/save-license.php', {
@@ -291,22 +320,18 @@ export const licenseService = {
             },
             error: data.license.error || null,
           };
-          this.saveLicenseStateLocal(state);
+          await this.persistLicenseToAppStore(state);
           return { success: Boolean(data.success), state };
         }
       }
     } catch {
-      // Graceful fallback to verifyLicense
+      // Fallback to verifyLicense
     }
 
     const state = await this.verifyLicense(cleanKey, true);
     return { success: state.valid, state };
   },
 
-  /**
-   * Checks whether VIN Report & PDF service is authorized by calling `/api/vin-report.php`
-   * and checking local state.
-   */
   async checkVinReportAccess(vin?: string, action: 'lookup' | 'pdf' = 'lookup'): Promise<{
     allowed: boolean;
     error: string | null;
@@ -339,7 +364,7 @@ export const licenseService = {
         return { allowed: true, error: null };
       }
     } catch {
-      // Offline fallback: inspect local license state
+      // Offline fallback: inspect in-memory license state
     }
 
     const state = this.getLicenseState();
@@ -352,10 +377,6 @@ export const licenseService = {
     return { allowed: true, error: null };
   },
 
-  /**
-   * Checks whether Payment Gateway Processing is authorized by calling `/api/process-payment.php`
-   * and checking local state.
-   */
   async checkPaymentGatewayAccess(payload?: {
     gateway?: string;
     amount?: number;
@@ -393,7 +414,7 @@ export const licenseService = {
         return { allowed: true, error: null };
       }
     } catch {
-      // Offline fallback: inspect local license state
+      // Offline fallback: inspect in-memory license state
     }
 
     const state = this.getLicenseState();

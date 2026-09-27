@@ -1,5 +1,6 @@
 import { ReportPlanId } from '../types';
 import { verifyStripeCredentials, verifyPaypalCredentials } from './paymentCheckService';
+import { licenseService, LicenseState } from './licenseService';
 
 export type OrderPaymentStatus = 'Paid' | 'Pending' | 'Failed' | 'Refunded' | 'Disputed' | 'Manual Verified';
 export type OrderDeliveryStatus = 'Pending Manual Send' | 'Delivered & Emailed' | 'Processing Dispatch' | 'Failed';
@@ -384,7 +385,6 @@ export function validatePaypalCredentials(
   };
 }
 
-// Client-Side Verification for Stripe
 export async function verifyStripeWithServer(
   publishableKey: string,
   secretKey: string,
@@ -398,7 +398,6 @@ export async function verifyStripeWithServer(
   };
 }
 
-// Client-Side Verification for PayPal
 export async function verifyPaypalWithServer(
   publishableKey: string,
   secretKey: string,
@@ -412,7 +411,7 @@ export async function verifyPaypalWithServer(
   };
 }
 
-// Initial Sample Orders
+// Initial Seed Orders
 const INITIAL_ORDERS: ReportOrder[] = [
   {
     id: 'ord-1001',
@@ -729,17 +728,6 @@ const INITIAL_EMAIL_LOGS: EmailLog[] = [
   },
 ];
 
-// Storage Keys
-const STORAGE_ORDERS_KEY = 'wc_admin_orders_v1';
-const STORAGE_TICKETS_KEY = 'wc_admin_tickets_v1';
-const STORAGE_PACKAGES_KEY = 'wc_admin_packages_v1';
-const STORAGE_GATEWAYS_KEY = 'wc_admin_gateways_v1';
-const STORAGE_EMAIL_SETTINGS_KEY = 'wc_admin_email_settings_v1';
-const STORAGE_EMAIL_LOGS_KEY = 'wc_admin_email_logs_v1';
-const STORAGE_CURRENCY_SETTINGS_KEY = 'wc_admin_currency_settings_v1';
-const STORAGE_VISITOR_COUNTRY_KEY = 'wc_visitor_country_v1';
-const STORAGE_VISITOR_GEO_DETECTED_KEY = 'wc_visitor_geo_detected_v1';
-
 function inferCountryFromBrowser(): string {
   try {
     const tz = Intl.DateTimeFormat().resolvedOptions().timeZone || '';
@@ -780,16 +768,190 @@ function inferCountryFromBrowser(): string {
   return 'US';
 }
 
+interface AppStoreMemoryState {
+  orders: ReportOrder[];
+  tickets: SupportTicket[];
+  packages: EditablePackage[];
+  license_config: LicenseState;
+  gateways: GatewaySettings;
+  currency_settings: CurrencySettings;
+  email_settings: AdminEmailSettings;
+  email_logs: EmailLog[];
+  visitor_country: string;
+  visitor_geo_mode: 'auto' | 'manual' | 'geo';
+  search_history: string[];
+  isLoadedFromServer: boolean;
+}
+
+/**
+ * Centralized Application State Store backed by MySQL PHP API (`/api/app-store.php`).
+ * Does NOT use browser `localStorage` for primary state management.
+ */
 class AdminStore {
-  // Orders
-  getOrders(): ReportOrder[] {
-    try {
-      const data = localStorage.getItem(STORAGE_ORDERS_KEY);
-      if (data) return JSON.parse(data);
-    } catch {
-      // fallback
+  private memory: AppStoreMemoryState = {
+    orders: [...INITIAL_ORDERS],
+    tickets: [...INITIAL_TICKETS],
+    packages: [...INITIAL_PACKAGES],
+    license_config: licenseService.getLicenseState(),
+    gateways: { ...INITIAL_GATEWAY_SETTINGS },
+    currency_settings: { ...INITIAL_CURRENCY_SETTINGS },
+    email_settings: { ...INITIAL_EMAIL_SETTINGS },
+    email_logs: [...INITIAL_EMAIL_LOGS],
+    visitor_country: inferCountryFromBrowser(),
+    visitor_geo_mode: 'auto',
+    search_history: ['WBACH9343YLG18917'],
+    isLoadedFromServer: false,
+  };
+
+  constructor() {
+    if (typeof window !== 'undefined') {
+      // Automatically fetch initial state from MySQL PHP endpoint `/api/app-store.php`
+      this.fetchFromDatabase();
     }
-    return INITIAL_ORDERS;
+  }
+
+  /**
+   * Fetches all application data from `GET /api/app-store.php` (MySQL backend)
+   * and notifies all mounted React components.
+   */
+  async fetchFromDatabase(): Promise<boolean> {
+    try {
+      const response = await fetch('/api/app-store.php', {
+        method: 'GET',
+        headers: {
+          Accept: 'application/json',
+        },
+      });
+
+      if (!response.ok) return false;
+      const contentType = response.headers.get('content-type') || '';
+      if (!contentType.includes('application/json')) return false;
+
+      const json = await response.json();
+      if (json && json.success && json.data) {
+        this.applyServerData(json.data);
+        return true;
+      }
+    } catch (err) {
+      console.warn('Could not fetch initial state from /api/app-store.php:', err);
+    }
+    return false;
+  }
+
+  /**
+   * Applies server response payload (`data`) to in-memory store and dispatches update events
+   */
+  private applyServerData(data: any): void {
+    if (!data || typeof data !== 'object') return;
+
+    if (Array.isArray(data.packages) && data.packages.length > 0) {
+      this.memory.packages = data.packages;
+    }
+    if (Array.isArray(data.tickets)) {
+      this.memory.tickets = data.tickets;
+    }
+    if (Array.isArray(data.orders)) {
+      this.memory.orders = data.orders;
+    }
+    if (data.license_config && typeof data.license_config === 'object') {
+      licenseService.hydrateFromAppStore(data.license_config);
+      this.memory.license_config = licenseService.getLicenseState();
+    }
+    if (data.gateways && typeof data.gateways === 'object') {
+      this.memory.gateways = this.normalizeGateways(data.gateways);
+    }
+    if (data.currency_settings && typeof data.currency_settings === 'object') {
+      const mergedMarkets = DEFAULT_COUNTRY_MARKETS.map((def) => {
+        const found = data.currency_settings.markets?.find(
+          (m: CountryMarketConfig) => m.countryCode === def.countryCode
+        );
+        return found ? { ...def, ...found } : def;
+      });
+      this.memory.currency_settings = {
+        ...INITIAL_CURRENCY_SETTINGS,
+        ...data.currency_settings,
+        markets: mergedMarkets,
+      };
+    }
+    if (data.email_settings && typeof data.email_settings === 'object') {
+      this.memory.email_settings = {
+        ...INITIAL_EMAIL_SETTINGS,
+        ...data.email_settings,
+      };
+    }
+    if (Array.isArray(data.email_logs)) {
+      this.memory.email_logs = data.email_logs;
+    }
+    if (typeof data.visitor_country === 'string' && data.visitor_country) {
+      this.memory.visitor_country = data.visitor_country;
+    }
+    if (Array.isArray(data.search_history) && data.search_history.length > 0) {
+      this.memory.search_history = data.search_history;
+    }
+
+    this.memory.isLoadedFromServer = true;
+
+    if (typeof window !== 'undefined') {
+      window.dispatchEvent(new Event('wc_store_synced'));
+      window.dispatchEvent(new Event('wc_orders_updated'));
+      window.dispatchEvent(new Event('wc_tickets_updated'));
+      window.dispatchEvent(new Event('wc_packages_updated'));
+      window.dispatchEvent(new Event('wc_currency_updated'));
+      window.dispatchEvent(new Event('wc_gateways_updated'));
+      window.dispatchEvent(new Event('wc_emails_updated'));
+      window.dispatchEvent(new Event('wc_history_updated'));
+    }
+  }
+
+  /**
+   * Persists changes directly to `POST /api/app-store.php` (MySQL backend)
+   */
+  async persistToDatabase(payload: Record<string, any>): Promise<void> {
+    try {
+      const response = await fetch('/api/app-store.php', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Accept: 'application/json',
+        },
+        body: JSON.stringify(payload),
+      });
+
+      const contentType = response.headers.get('content-type') || '';
+      if (response.ok && contentType.includes('application/json')) {
+        const json = await response.json();
+        if (json?.success && json?.data?.license_config) {
+          licenseService.hydrateFromAppStore(json.data.license_config);
+        }
+      }
+    } catch (err) {
+      console.warn('Database sync to /api/app-store.php failed:', err);
+    }
+  }
+
+  // ===========================================================================
+  // SEARCH HISTORY (stored in MySQL `/api/app-store.php`)
+  // ===========================================================================
+  getSearchHistory(): string[] {
+    return this.memory.search_history;
+  }
+
+  saveSearchHistory(history: string[]): void {
+    this.memory.search_history = history.slice(0, 10);
+    if (typeof window !== 'undefined') {
+      window.dispatchEvent(new Event('wc_history_updated'));
+    }
+    this.persistToDatabase({
+      action: 'save_search_history',
+      search_history: this.memory.search_history,
+    });
+  }
+
+  // ===========================================================================
+  // ORDERS (stored in MySQL `/api/app-store.php`)
+  // ===========================================================================
+  getOrders(): ReportOrder[] {
+    return this.memory.orders;
   }
 
   saveOrder(order: Omit<ReportOrder, 'id' | 'orderNumber' | 'createdAt'>): ReportOrder {
@@ -809,12 +971,17 @@ class AdminStore {
     };
 
     const updated = [newOrder, ...orders];
-    try {
-      localStorage.setItem(STORAGE_ORDERS_KEY, JSON.stringify(updated));
+    this.memory.orders = updated;
+
+    if (typeof window !== 'undefined') {
       window.dispatchEvent(new Event('wc_orders_updated'));
-    } catch {
-      // ignore
     }
+
+    this.persistToDatabase({
+      action: 'save_order',
+      order: newOrder,
+      orders: updated,
+    });
 
     // Auto Dispatch Notification Emails for Orders
     try {
@@ -854,12 +1021,17 @@ class AdminStore {
       }
       return o;
     });
-    try {
-      localStorage.setItem(STORAGE_ORDERS_KEY, JSON.stringify(updated));
+    this.memory.orders = updated;
+    if (typeof window !== 'undefined') {
       window.dispatchEvent(new Event('wc_orders_updated'));
-    } catch {
-      // ignore
     }
+    this.persistToDatabase({
+      action: 'update_order_status',
+      orderId,
+      paymentStatus,
+      deliveryStatus,
+      orders: updated,
+    });
   }
 
   bulkUpdateOrderStatus(
@@ -879,12 +1051,17 @@ class AdminStore {
       }
       return o;
     });
-    try {
-      localStorage.setItem(STORAGE_ORDERS_KEY, JSON.stringify(updated));
+    this.memory.orders = updated;
+    if (typeof window !== 'undefined') {
       window.dispatchEvent(new Event('wc_orders_updated'));
-    } catch {
-      // ignore
     }
+    this.persistToDatabase({
+      action: 'bulk_update_orders',
+      orderIds,
+      paymentStatus,
+      deliveryStatus,
+      orders: updated,
+    });
   }
 
   bulkUpdateOrdersStatus(
@@ -898,24 +1075,30 @@ class AdminStore {
   deleteOrder(orderId: string): void {
     const orders = this.getOrders();
     const updated = orders.filter((o) => o.id !== orderId);
-    try {
-      localStorage.setItem(STORAGE_ORDERS_KEY, JSON.stringify(updated));
+    this.memory.orders = updated;
+    if (typeof window !== 'undefined') {
       window.dispatchEvent(new Event('wc_orders_updated'));
-    } catch {
-      // ignore
     }
+    this.persistToDatabase({
+      action: 'delete_order',
+      orderId,
+      orders: updated,
+    });
   }
 
   deleteOrders(orderIds: string[]): void {
     const idSet = new Set(orderIds);
     const orders = this.getOrders();
     const updated = orders.filter((o) => !idSet.has(o.id));
-    try {
-      localStorage.setItem(STORAGE_ORDERS_KEY, JSON.stringify(updated));
+    this.memory.orders = updated;
+    if (typeof window !== 'undefined') {
       window.dispatchEvent(new Event('wc_orders_updated'));
-    } catch {
-      // ignore
     }
+    this.persistToDatabase({
+      action: 'delete_orders',
+      orderIds,
+      orders: updated,
+    });
   }
 
   async dispatchManualReportEmail(
@@ -944,15 +1127,11 @@ class AdminStore {
     return { success: true, message: `Report dispatched to ${order.email} (Log: ${log.id})` };
   }
 
-  // Tickets
+  // ===========================================================================
+  // SUPPORT TICKETS (stored in MySQL `/api/app-store.php`)
+  // ===========================================================================
   getTickets(): SupportTicket[] {
-    try {
-      const data = localStorage.getItem(STORAGE_TICKETS_KEY);
-      if (data) return JSON.parse(data);
-    } catch {
-      // fallback
-    }
-    return INITIAL_TICKETS;
+    return this.memory.tickets;
   }
 
   saveTicket(ticket: Omit<SupportTicket, 'id' | 'ticketNumber' | 'createdAt' | 'status'>): SupportTicket {
@@ -970,11 +1149,17 @@ class AdminStore {
     };
 
     const updated = [newTicket, ...tickets];
-    try {
-      localStorage.setItem(STORAGE_TICKETS_KEY, JSON.stringify(updated));
-    } catch {
-      // ignore
+    this.memory.tickets = updated;
+
+    if (typeof window !== 'undefined') {
+      window.dispatchEvent(new Event('wc_tickets_updated'));
     }
+
+    this.persistToDatabase({
+      action: 'save_ticket',
+      ticket: newTicket,
+      tickets: updated,
+    });
 
     try {
       const emailSettings = this.getEmailSettings();
@@ -1030,11 +1215,18 @@ class AdminStore {
       return t;
     });
 
-    try {
-      localStorage.setItem(STORAGE_TICKETS_KEY, JSON.stringify(updated));
-    } catch {
-      // ignore
+    this.memory.tickets = updated;
+    if (typeof window !== 'undefined') {
+      window.dispatchEvent(new Event('wc_tickets_updated'));
     }
+
+    this.persistToDatabase({
+      action: 'update_ticket',
+      ticketId,
+      status,
+      adminReply: reply,
+      tickets: updated,
+    });
 
     if (reply && repliedTicket) {
       try {
@@ -1057,11 +1249,16 @@ class AdminStore {
     const idSet = new Set(ticketIds);
     const tickets = this.getTickets();
     const updated = tickets.map((t) => (idSet.has(t.id) ? { ...t, status } : t));
-    try {
-      localStorage.setItem(STORAGE_TICKETS_KEY, JSON.stringify(updated));
-    } catch {
-      // ignore
+    this.memory.tickets = updated;
+    if (typeof window !== 'undefined') {
+      window.dispatchEvent(new Event('wc_tickets_updated'));
     }
+    this.persistToDatabase({
+      action: 'bulk_update_tickets',
+      ticketIds,
+      status,
+      tickets: updated,
+    });
   }
 
   bulkUpdateTicketsStatus(ticketIds: string[], status: SupportTicket['status']): void {
@@ -1071,33 +1268,37 @@ class AdminStore {
   deleteTicket(ticketId: string): void {
     const tickets = this.getTickets();
     const updated = tickets.filter((t) => t.id !== ticketId);
-    try {
-      localStorage.setItem(STORAGE_TICKETS_KEY, JSON.stringify(updated));
-    } catch {
-      // ignore
+    this.memory.tickets = updated;
+    if (typeof window !== 'undefined') {
+      window.dispatchEvent(new Event('wc_tickets_updated'));
     }
+    this.persistToDatabase({
+      action: 'delete_ticket',
+      ticketId,
+      tickets: updated,
+    });
   }
 
   deleteTickets(ticketIds: string[]): void {
     const idSet = new Set(ticketIds);
     const tickets = this.getTickets();
     const updated = tickets.filter((t) => !idSet.has(t.id));
-    try {
-      localStorage.setItem(STORAGE_TICKETS_KEY, JSON.stringify(updated));
-    } catch {
-      // ignore
+    this.memory.tickets = updated;
+    if (typeof window !== 'undefined') {
+      window.dispatchEvent(new Event('wc_tickets_updated'));
     }
+    this.persistToDatabase({
+      action: 'delete_tickets',
+      ticketIds,
+      tickets: updated,
+    });
   }
 
-  // Packages
+  // ===========================================================================
+  // PACKAGES (stored in MySQL `/api/app-store.php`)
+  // ===========================================================================
   getPackages(): EditablePackage[] {
-    try {
-      const data = localStorage.getItem(STORAGE_PACKAGES_KEY);
-      if (data) return JSON.parse(data);
-    } catch {
-      // fallback
-    }
-    return INITIAL_PACKAGES;
+    return this.memory.packages;
   }
 
   savePackage(updatedPkg: EditablePackage): void {
@@ -1106,12 +1307,14 @@ class AdminStore {
     const updated = exists
       ? packages.map((p) => (p.id === updatedPkg.id ? updatedPkg : p))
       : [...packages, updatedPkg];
-    try {
-      localStorage.setItem(STORAGE_PACKAGES_KEY, JSON.stringify(updated));
+    this.memory.packages = updated;
+    if (typeof window !== 'undefined') {
       window.dispatchEvent(new Event('wc_packages_updated'));
-    } catch {
-      // ignore
     }
+    this.persistToDatabase({
+      action: 'save_packages',
+      packages: updated,
+    });
   }
 
   addPackage(pkg: Omit<EditablePackage, 'id'> & { id?: string }): EditablePackage {
@@ -1122,100 +1325,82 @@ class AdminStore {
       id: newId,
     };
     const updated = [...packages, newPkg];
-    try {
-      localStorage.setItem(STORAGE_PACKAGES_KEY, JSON.stringify(updated));
+    this.memory.packages = updated;
+    if (typeof window !== 'undefined') {
       window.dispatchEvent(new Event('wc_packages_updated'));
-    } catch {
-      // ignore
     }
+    this.persistToDatabase({
+      action: 'save_packages',
+      packages: updated,
+    });
     return newPkg;
   }
 
   deletePackage(pkgId: string): void {
     const packages = this.getPackages();
     const updated = packages.filter((p) => p.id !== pkgId);
-    try {
-      localStorage.setItem(STORAGE_PACKAGES_KEY, JSON.stringify(updated));
+    this.memory.packages = updated;
+    if (typeof window !== 'undefined') {
       window.dispatchEvent(new Event('wc_packages_updated'));
-    } catch {
-      // ignore
     }
+    this.persistToDatabase({
+      action: 'save_packages',
+      packages: updated,
+    });
   }
 
   resetPackagesToDefaults(): EditablePackage[] {
-    try {
-      localStorage.removeItem(STORAGE_PACKAGES_KEY);
+    this.memory.packages = [...INITIAL_PACKAGES];
+    if (typeof window !== 'undefined') {
       window.dispatchEvent(new Event('wc_packages_updated'));
-    } catch {
-      // ignore
     }
-    return INITIAL_PACKAGES;
+    this.persistToDatabase({
+      action: 'save_packages',
+      packages: this.memory.packages,
+    });
+    return this.memory.packages;
   }
 
   // ===========================================================================
-  // CURRENCY & COUNTRY PRICING ENGINE
+  // CURRENCY & COUNTRY PRICING ENGINE (stored in MySQL `/api/app-store.php`)
   // ===========================================================================
   getCurrencySettings(): CurrencySettings {
-    try {
-      const data = localStorage.getItem(STORAGE_CURRENCY_SETTINGS_KEY);
-      if (data) {
-        const parsed = JSON.parse(data);
-        // Merge markets to ensure all default markets exist
-        const mergedMarkets = DEFAULT_COUNTRY_MARKETS.map((def) => {
-          const found = parsed.markets?.find((m: CountryMarketConfig) => m.countryCode === def.countryCode);
-          return found ? { ...def, ...found } : def;
-        });
-        return {
-          ...INITIAL_CURRENCY_SETTINGS,
-          ...parsed,
-          markets: mergedMarkets,
-        };
-      }
-    } catch {
-      // ignore
-    }
-    return INITIAL_CURRENCY_SETTINGS;
+    return this.memory.currency_settings;
   }
 
   saveCurrencySettings(settings: CurrencySettings): void {
-    try {
-      localStorage.setItem(STORAGE_CURRENCY_SETTINGS_KEY, JSON.stringify(settings));
+    this.memory.currency_settings = settings;
+    if (typeof window !== 'undefined') {
       window.dispatchEvent(new Event('wc_currency_updated'));
       window.dispatchEvent(new Event('wc_packages_updated'));
-    } catch {
-      // ignore
     }
+    this.persistToDatabase({
+      action: 'save_currency_settings',
+      currency_settings: settings,
+    });
   }
 
   getVisitorCountryCode(): string {
-    try {
-      const stored = localStorage.getItem(STORAGE_VISITOR_COUNTRY_KEY);
-      if (stored) return stored;
-    } catch {
-      // ignore
-    }
-    const inferred = inferCountryFromBrowser();
-    try {
-      localStorage.setItem(STORAGE_VISITOR_COUNTRY_KEY, inferred);
-    } catch {}
-    return inferred;
+    return this.memory.visitor_country || inferCountryFromBrowser();
   }
 
   setVisitorCountryCode(countryCode: string): void {
-    try {
-      localStorage.setItem(STORAGE_VISITOR_COUNTRY_KEY, countryCode.toUpperCase());
-      localStorage.setItem(STORAGE_VISITOR_GEO_DETECTED_KEY, 'manual');
+    const clean = countryCode.toUpperCase();
+    this.memory.visitor_country = clean;
+    this.memory.visitor_geo_mode = 'manual';
+    if (typeof window !== 'undefined') {
       window.dispatchEvent(new Event('wc_currency_updated'));
-    } catch {
-      // ignore
     }
+    this.persistToDatabase({
+      action: 'save_visitor_country',
+      visitor_country: clean,
+    });
   }
 
   async detectVisitorCountryByGeo(): Promise<CountryMarketConfig> {
     const settings = this.getCurrencySettings();
     try {
-      const manualOrDetected = localStorage.getItem(STORAGE_VISITOR_GEO_DETECTED_KEY);
-      if (manualOrDetected === 'manual') {
+      if (this.memory.visitor_geo_mode === 'manual') {
         return this.getActiveMarket();
       }
 
@@ -1234,9 +1419,11 @@ class AdminStore {
 
           const matched = settings.markets.find((m) => m.countryCode === mappedCode);
           if (matched) {
-            localStorage.setItem(STORAGE_VISITOR_COUNTRY_KEY, matched.countryCode);
-            localStorage.setItem(STORAGE_VISITOR_GEO_DETECTED_KEY, 'geo');
-            window.dispatchEvent(new Event('wc_currency_updated'));
+            this.memory.visitor_country = matched.countryCode;
+            this.memory.visitor_geo_mode = 'geo';
+            if (typeof window !== 'undefined') {
+              window.dispatchEvent(new Event('wc_currency_updated'));
+            }
             return matched;
           }
         }
@@ -1283,7 +1470,6 @@ class AdminStore {
 
     const targetCurrency = activeMarket.currencyCode;
 
-    // Check if package has a custom override price for this currency
     let storedPkg: EditablePackage | undefined;
     if (pkg.id) {
       storedPkg = this.getPackages().find((p) => p.id === pkg.id);
@@ -1298,7 +1484,6 @@ class AdminStore {
       finalAmount = pkg.price;
     } else {
       const raw = pkg.price * (activeMarket.exchangeRate || 1);
-      // Round nicely for high-denomination currencies vs decimal currencies
       if (targetCurrency === 'PKR' || targetCurrency === 'INR') {
         finalAmount = Math.round(raw);
       } else {
@@ -1337,113 +1522,101 @@ class AdminStore {
   }
 
   resetCurrencySettingsToDefault(): CurrencySettings {
-    try {
-      localStorage.removeItem(STORAGE_CURRENCY_SETTINGS_KEY);
+    this.memory.currency_settings = { ...INITIAL_CURRENCY_SETTINGS };
+    if (typeof window !== 'undefined') {
       window.dispatchEvent(new Event('wc_currency_updated'));
       window.dispatchEvent(new Event('wc_packages_updated'));
-    } catch {
-      // ignore
     }
-    return INITIAL_CURRENCY_SETTINGS;
+    this.persistToDatabase({
+      action: 'save_currency_settings',
+      currency_settings: this.memory.currency_settings,
+    });
+    return this.memory.currency_settings;
+  }
+
+  // ===========================================================================
+  // GATEWAYS & EMAILS (stored in MySQL `/api/app-store.php`)
+  // ===========================================================================
+  private normalizeGateways(parsed: any): GatewaySettings {
+    const stripeKey = (parsed?.stripe?.secretKey || '').trim();
+    const stripeStatus =
+      parsed?.stripe?.connectionStatus === 'connected' &&
+      stripeKey &&
+      !stripeKey.includes('SAMPLE')
+        ? 'connected'
+        : parsed?.stripe?.connectionStatus || 'idle';
+
+    const paypalKey = (parsed?.paypal?.secretKey || '').trim();
+    const paypalStatus =
+      parsed?.paypal?.connectionStatus === 'connected' &&
+      paypalKey &&
+      !paypalKey.includes('SAMPLE')
+        ? 'connected'
+        : parsed?.paypal?.connectionStatus || 'idle';
+
+    return {
+      ...INITIAL_GATEWAY_SETTINGS,
+      ...parsed,
+      stripe: {
+        ...INITIAL_GATEWAY_SETTINGS.stripe,
+        ...(parsed?.stripe || {}),
+        publishableKey: (parsed?.stripe?.publishableKey || '').replace(/.*SAMPLE.*/, ''),
+        secretKey: (parsed?.stripe?.secretKey || '').replace(/.*SAMPLE.*/, ''),
+        connectionStatus: stripeStatus,
+      },
+      paypal: {
+        ...INITIAL_GATEWAY_SETTINGS.paypal,
+        ...(parsed?.paypal || {}),
+        publishableKey: (parsed?.paypal?.publishableKey || parsed?.paypal?.clientId || '').replace(
+          /.*SAMPLE.*/,
+          ''
+        ),
+        secretKey: (parsed?.paypal?.secretKey || '').replace(/.*SAMPLE.*/, ''),
+        connectionStatus: paypalStatus,
+      },
+      stripeLink: {
+        ...INITIAL_GATEWAY_SETTINGS.stripeLink,
+        ...(parsed?.stripeLink || {}),
+      },
+      general: {
+        ...INITIAL_GATEWAY_SETTINGS.general,
+        ...(parsed?.general || {}),
+      },
+    };
   }
 
   getGateways(): GatewaySettings {
-    try {
-      const data = localStorage.getItem(STORAGE_GATEWAYS_KEY);
-      if (data) {
-        const parsed = JSON.parse(data);
-
-        const stripeKey = (parsed.stripe?.secretKey || '').trim();
-        const stripeStatus =
-          parsed.stripe?.connectionStatus === 'connected' &&
-          stripeKey &&
-          !stripeKey.includes('SAMPLE')
-            ? 'connected'
-            : parsed.stripe?.connectionStatus || 'idle';
-
-        const paypalKey = (parsed.paypal?.secretKey || '').trim();
-        const paypalStatus =
-          parsed.paypal?.connectionStatus === 'connected' &&
-          paypalKey &&
-          !paypalKey.includes('SAMPLE')
-            ? 'connected'
-            : parsed.paypal?.connectionStatus || 'idle';
-
-        return {
-          ...INITIAL_GATEWAY_SETTINGS,
-          ...parsed,
-          stripe: {
-            ...INITIAL_GATEWAY_SETTINGS.stripe,
-            ...(parsed.stripe || {}),
-            publishableKey: (parsed.stripe?.publishableKey || '').replace(/.*SAMPLE.*/, ''),
-            secretKey: (parsed.stripe?.secretKey || '').replace(/.*SAMPLE.*/, ''),
-            connectionStatus: stripeStatus,
-          },
-          paypal: {
-            ...INITIAL_GATEWAY_SETTINGS.paypal,
-            ...(parsed.paypal || {}),
-            publishableKey: (parsed.paypal?.publishableKey || parsed.paypal?.clientId || '').replace(/.*SAMPLE.*/, ''),
-            secretKey: (parsed.paypal?.secretKey || '').replace(/.*SAMPLE.*/, ''),
-            connectionStatus: paypalStatus,
-          },
-          stripeLink: {
-            ...INITIAL_GATEWAY_SETTINGS.stripeLink,
-            ...(parsed.stripeLink || {}),
-          },
-          general: {
-            ...INITIAL_GATEWAY_SETTINGS.general,
-            ...(parsed.general || {}),
-          },
-        };
-      }
-    } catch {
-      // fallback
-    }
-    return INITIAL_GATEWAY_SETTINGS;
+    return this.memory.gateways;
   }
 
   saveGateways(settings: GatewaySettings): void {
-    try {
-      localStorage.setItem(STORAGE_GATEWAYS_KEY, JSON.stringify(settings));
+    this.memory.gateways = this.normalizeGateways(settings);
+    if (typeof window !== 'undefined') {
       window.dispatchEvent(new Event('wc_gateways_updated'));
-    } catch {
-      // ignore
     }
+    this.persistToDatabase({
+      action: 'save_gateways',
+      gateways: this.memory.gateways,
+    });
   }
 
-  // Email Configuration & Dispatch Logs
   getEmailSettings(): AdminEmailSettings {
-    try {
-      const data = localStorage.getItem(STORAGE_EMAIL_SETTINGS_KEY);
-      if (data) {
-        return {
-          ...INITIAL_EMAIL_SETTINGS,
-          ...JSON.parse(data),
-        };
-      }
-    } catch {
-      // fallback
-    }
-    return INITIAL_EMAIL_SETTINGS;
+    return this.memory.email_settings;
   }
 
   saveEmailSettings(settings: AdminEmailSettings): void {
-    try {
-      localStorage.setItem(STORAGE_EMAIL_SETTINGS_KEY, JSON.stringify(settings));
+    this.memory.email_settings = settings;
+    if (typeof window !== 'undefined') {
       window.dispatchEvent(new Event('wc_emails_updated'));
-    } catch {
-      // ignore
     }
+    this.persistToDatabase({
+      action: 'save_email_settings',
+      email_settings: settings,
+    });
   }
 
   getEmailLogs(): EmailLog[] {
-    try {
-      const data = localStorage.getItem(STORAGE_EMAIL_LOGS_KEY);
-      if (data) return JSON.parse(data);
-    } catch {
-      // fallback
-    }
-    return INITIAL_EMAIL_LOGS;
+    return this.memory.email_logs;
   }
 
   sendTestEmail(targetEmail?: string): EmailLog {
@@ -1486,18 +1659,15 @@ class AdminStore {
     };
 
     const updated = [newLog, ...logs].slice(0, 50);
-    try {
-      localStorage.setItem(STORAGE_EMAIL_LOGS_KEY, JSON.stringify(updated));
+    this.memory.email_logs = updated;
+    if (typeof window !== 'undefined') {
       window.dispatchEvent(new Event('wc_emails_updated'));
-    } catch {
-      // ignore
     }
 
-    console.info(
-      `%c[EMAIL DISPATCH SUCCESS] ✉️ %cTo: ${newLog.to} | From: ${newLog.from}\nSubject: ${newLog.subject}`,
-      'color: #10b981; font-weight: bold;',
-      'color: #3b82f6;'
-    );
+    this.persistToDatabase({
+      action: 'save_email_logs',
+      email_logs: updated,
+    });
 
     try {
       fetch('/send-mail.php', {
@@ -1526,24 +1696,38 @@ class AdminStore {
   }
 
   clearEmailLogs(): void {
-    try {
-      localStorage.removeItem(STORAGE_EMAIL_LOGS_KEY);
+    this.memory.email_logs = [];
+    if (typeof window !== 'undefined') {
       window.dispatchEvent(new Event('wc_emails_updated'));
-    } catch {
-      // ignore
     }
+    this.persistToDatabase({
+      action: 'save_email_logs',
+      email_logs: [],
+    });
   }
 
   resetToDefaults(): void {
-    try {
-      localStorage.removeItem(STORAGE_ORDERS_KEY);
-      localStorage.removeItem(STORAGE_TICKETS_KEY);
-      localStorage.removeItem(STORAGE_PACKAGES_KEY);
-      localStorage.removeItem(STORAGE_GATEWAYS_KEY);
-      localStorage.removeItem(STORAGE_CURRENCY_SETTINGS_KEY);
-    } catch {
-      // ignore
+    this.memory.orders = [...INITIAL_ORDERS];
+    this.memory.tickets = [...INITIAL_TICKETS];
+    this.memory.packages = [...INITIAL_PACKAGES];
+    this.memory.gateways = { ...INITIAL_GATEWAY_SETTINGS };
+    this.memory.currency_settings = { ...INITIAL_CURRENCY_SETTINGS };
+    if (typeof window !== 'undefined') {
+      window.dispatchEvent(new Event('wc_store_synced'));
+      window.dispatchEvent(new Event('wc_orders_updated'));
+      window.dispatchEvent(new Event('wc_tickets_updated'));
+      window.dispatchEvent(new Event('wc_packages_updated'));
+      window.dispatchEvent(new Event('wc_currency_updated'));
+      window.dispatchEvent(new Event('wc_gateways_updated'));
     }
+    this.persistToDatabase({
+      action: 'reset_defaults',
+      packages: this.memory.packages,
+      tickets: this.memory.tickets,
+      orders: this.memory.orders,
+      gateways: this.memory.gateways,
+      currency_settings: this.memory.currency_settings,
+    });
   }
 }
 

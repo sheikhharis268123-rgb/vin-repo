@@ -66,22 +66,22 @@ export default function App() {
   const [isCheckoutOpen, setIsCheckoutOpen] = useState(false);
   const [selectedPlanForCheckout, setSelectedPlanForCheckout] = useState<ReportPlanId>('silver');
 
-  // Search History
-  const [searchHistory, setSearchHistory] = useState<string[]>(['WBACH9343YLG18917']);
+  // Search History (synced with MySQL /api/app-store.php via adminStore)
+  const [searchHistory, setSearchHistory] = useState<string[]>(() =>
+    adminStore.getSearchHistory()
+  );
 
-  // Load history from localStorage
+  // Sync history and application store from /api/app-store.php
   useEffect(() => {
-    try {
-      const stored = localStorage.getItem('vw_vin_history');
-      if (stored) {
-        const parsed = JSON.parse(stored);
-        if (Array.isArray(parsed) && parsed.length > 0) {
-          setSearchHistory(parsed);
-        }
-      }
-    } catch {
-      // ignore
-    }
+    const syncHistory = () => {
+      setSearchHistory(adminStore.getSearchHistory());
+    };
+    window.addEventListener('wc_history_updated', syncHistory);
+    window.addEventListener('wc_store_synced', syncHistory);
+    return () => {
+      window.removeEventListener('wc_history_updated', syncHistory);
+      window.removeEventListener('wc_store_synced', syncHistory);
+    };
   }, []);
 
   // Listen to browser pathname, hash, and popstate for secret route /admin-console-123
@@ -314,13 +314,11 @@ export default function App() {
       setUnlockedPlan(null);
       setNotFoundData(null);
 
-      // Save to history
+      // Save to history in MySQL via /api/app-store.php
       const vinToSave = searchResolution.report.specs.vin;
       setSearchHistory((prev) => {
         const next = [vinToSave, ...prev.filter((v) => v !== vinToSave)].slice(0, 10);
-        try {
-          localStorage.setItem('vw_vin_history', JSON.stringify(next));
-        } catch {}
+        adminStore.saveSearchHistory(next);
         return next;
       });
 
@@ -379,9 +377,7 @@ export default function App() {
 
   const handleClearHistory = () => {
     setSearchHistory([]);
-    try {
-      localStorage.removeItem('vw_vin_history');
-    } catch {}
+    adminStore.saveSearchHistory([]);
   };
 
   const handleGetStarted = () => {

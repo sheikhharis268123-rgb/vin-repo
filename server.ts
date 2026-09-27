@@ -13,6 +13,7 @@ const __dirname = path.dirname(__filename);
 
 const LICENSE_CONFIG_FILE = path.join(process.cwd(), '.license_config.json');
 const LICENSE_CACHE_FILE = path.join(process.cwd(), '.license_cache.json');
+const APP_STORE_DB_FILE = path.join(process.cwd(), '.app_store_db.json');
 const LICENSE_CACHE_TTL_MS = 12 * 60 * 60 * 1000; // 12-hour TTL
 
 interface ServerLicenseResult {
@@ -436,6 +437,124 @@ async function startServer() {
       amount: Number(req.body?.amount || 0),
       currency: String(req.body?.currency || 'USD').toUpperCase(),
       license: licenseStatus,
+    });
+  });
+
+  // Unified Application Store Endpoint (/api/app-store.php)
+  app.all('/api/app-store.php', async (req, res) => {
+    if (req.method === 'OPTIONS') {
+      return res.status(200).json({ success: true, status: 'ok' });
+    }
+
+    const loadAppStore = async () => {
+      const activeKey = getSavedServerLicenseKey();
+      const licenseCfg = await checkWheelClarifyLicenseNode(
+        activeKey,
+        String(req.hostname || 'localhost'),
+        false
+      );
+      let currentStore: Record<string, any> = {
+        packages: null,
+        tickets: null,
+        orders: null,
+        license_config: licenseCfg,
+        gateways: null,
+        currency_settings: null,
+        email_settings: null,
+        email_logs: null,
+        visitor_country: null,
+        search_history: ['WBACH9343YLG18917'],
+      };
+
+      if (fs.existsSync(APP_STORE_DB_FILE)) {
+        try {
+          const parsed = JSON.parse(fs.readFileSync(APP_STORE_DB_FILE, 'utf8'));
+          if (parsed && typeof parsed === 'object') {
+            currentStore = {
+              ...currentStore,
+              ...parsed,
+              license_config: parsed.license_config || licenseCfg,
+            };
+          }
+        } catch {
+          // ignore read error
+        }
+      }
+      return currentStore;
+    };
+
+    const saveAppStore = (storeData: Record<string, any>) => {
+      try {
+        fs.writeFileSync(APP_STORE_DB_FILE, JSON.stringify(storeData, null, 2), 'utf8');
+      } catch {
+        // ignore write error
+      }
+    };
+
+    const store = await loadAppStore();
+
+    if (req.method === 'GET') {
+      return res.status(200).json({
+        success: true,
+        data: store,
+      });
+    }
+
+    const payload = req.body || {};
+    const action = String(payload.action || '').toLowerCase();
+    const incomingData =
+      payload.data && typeof payload.data === 'object' ? payload.data : payload;
+
+    const allowedKeys = [
+      'packages',
+      'tickets',
+      'orders',
+      'license_config',
+      'gateways',
+      'currency_settings',
+      'email_settings',
+      'email_logs',
+      'visitor_country',
+      'search_history',
+    ];
+
+    for (const k of allowedKeys) {
+      if (k in incomingData && incomingData[k] !== undefined && incomingData[k] !== null) {
+        store[k] = incomingData[k];
+      }
+    }
+
+    if (action === 'save_license_config') {
+      if (payload.license_key) {
+        saveServerLicenseKey(String(payload.license_key));
+        store.license_config = await checkWheelClarifyLicenseNode(
+          String(payload.license_key),
+          String(req.hostname || 'localhost'),
+          true
+        );
+      } else if (payload.license_config) {
+        store.license_config = payload.license_config;
+        if (payload.license_config.license_key) {
+          saveServerLicenseKey(String(payload.license_config.license_key));
+        }
+      }
+    } else if (action === 'reset_defaults') {
+      store.packages = null;
+      store.tickets = null;
+      store.orders = null;
+      store.gateways = null;
+      store.currency_settings = null;
+    }
+
+    if (store.license_config?.license_key) {
+      saveServerLicenseKey(String(store.license_config.license_key));
+    }
+
+    saveAppStore(store);
+
+    return res.status(200).json({
+      success: true,
+      data: store,
     });
   });
 
