@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   X,
   CreditCard,
@@ -14,13 +14,16 @@ import {
   ShieldAlert,
   ArrowRight,
 } from 'lucide-react';
-import confetti from 'canvas-confetti';
 import { PayPalScriptProvider, PayPalButtons } from '@paypal/react-paypal-js';
 import { loadStripe } from '@stripe/stripe-js';
 import { FullVehicleReport, ReportPlanId } from '../types';
 import { PLANS } from '../data/sampleVehicles';
-import { adminStore } from '../services/adminStore';
+import { adminStore, CountryMarketConfig } from '../services/adminStore';
 import { PaymentSuccessModal, ConfirmedOrderData } from './PaymentSuccessModal';
+
+const PAYPAL_SUPPORTED_CURRENCIES = [
+  'USD', 'EUR', 'GBP', 'CAD', 'AUD', 'NZD', 'CHF', 'SEK', 'NOK', 'DKK', 'PLN', 'SGD', 'JPY', 'MXN', 'BRL'
+];
 
 interface CheckoutModalProps {
   isOpen: boolean;
@@ -41,6 +44,19 @@ export const CheckoutModal: React.FC<CheckoutModalProps> = ({
   const foundPkg = storePackages.find((p) => p.id === selectedPlanId);
   const plan = foundPkg || PLANS.find((p) => p.id === selectedPlanId) || storePackages[0] || PLANS[1];
 
+  const [activeMarket, setActiveMarket] = useState<CountryMarketConfig>(() => adminStore.getActiveMarket());
+
+  useEffect(() => {
+    const syncMarket = () => {
+      setActiveMarket(adminStore.getActiveMarket());
+    };
+    const handleStorage = (e: StorageEvent) => {
+      if (!e.key || e.key.startsWith('wc_')) syncMarket();
+    };
+    window.addEventListener('storage', handleStorage);
+    return () => window.removeEventListener('storage', handleStorage);
+  }, []);
+
   // Step 1: 4 Guest Fields
   const [fullName, setFullName] = useState('');
   const [email, setEmail] = useState('');
@@ -57,10 +73,16 @@ export const CheckoutModal: React.FC<CheckoutModalProps> = ({
   const gateways = adminStore.getGateways();
 
   // Active currency and cart total for client-side gateway checkout
-  const [cartCurrency] = useState<string>('USD');
-  const [selectedCurrency] = useState<string>('USD');
-  const activeCurrency = (cartCurrency || selectedCurrency || 'USD').toUpperCase();
-  const cartTotal = plan.price;
+  const activeCurrencyCode = activeMarket.currencyCode;
+  const formattedTotal = adminStore.formatPackagePrice(plan, activeCurrencyCode);
+  const localAmount = adminStore.getPackagePriceInCurrency(plan, activeCurrencyCode);
+
+  const paypalSdkCurrency = PAYPAL_SUPPORTED_CURRENCIES.includes(activeCurrencyCode)
+    ? activeCurrencyCode
+    : 'USD';
+  const paypalOrderAmount = PAYPAL_SUPPORTED_CURRENCIES.includes(activeCurrencyCode)
+    ? localAmount
+    : plan.price;
 
   // Stripe Client-Side Card Fields (No backend calls)
   const [cardNumber, setCardNumber] = useState('');
@@ -83,6 +105,14 @@ export const CheckoutModal: React.FC<CheckoutModalProps> = ({
   const [confirmedOrder, setConfirmedOrder] = useState<ConfirmedOrderData | null>(null);
   const [showSuccessModal, setShowSuccessModal] = useState(false);
 
+  // Live Payment Error Diagnostic
+  const [paymentError, setPaymentError] = useState<{
+    gateway: 'stripe' | 'paypal';
+    title: string;
+    message: string;
+    details?: string;
+  } | null>(null);
+
   if (!isOpen) return null;
 
   if (showSuccessModal && confirmedOrder) {
@@ -91,14 +121,11 @@ export const CheckoutModal: React.FC<CheckoutModalProps> = ({
         isOpen={showSuccessModal}
         onClose={() => {
           setShowSuccessModal(false);
+          onPaymentSuccess(plan.id);
           onClose();
         }}
         order={confirmedOrder}
         onNavigateHome={() => {
-          setShowSuccessModal(false);
-          onClose();
-        }}
-        onViewReportPreview={() => {
           setShowSuccessModal(false);
           onPaymentSuccess(plan.id);
           onClose();
@@ -119,14 +146,6 @@ export const CheckoutModal: React.FC<CheckoutModalProps> = ({
     if (!isFormValid) return;
     setStep('payment');
   };
-
-  // Live Payment Error Diagnostic
-  const [paymentError, setPaymentError] = useState<{
-    gateway: 'stripe' | 'paypal';
-    title: string;
-    message: string;
-    details?: string;
-  } | null>(null);
 
   // Card formatting helpers
   const handleCardNumberChange = (val: string) => {
@@ -152,7 +171,7 @@ export const CheckoutModal: React.FC<CheckoutModalProps> = ({
     setCardZip(val.replace(/[^0-9a-zA-Z -]/g, '').slice(0, 10));
   };
 
-  // 1. Client-Side Stripe Card Checkout (Zero Backend /api/ calls)
+  // 1. Client-Side Stripe Card Checkout
   const handlePayWithStripeCard = async (e?: React.FormEvent) => {
     if (e) e.preventDefault();
     setPaymentError(null);
@@ -185,7 +204,6 @@ export const CheckoutModal: React.FC<CheckoutModalProps> = ({
       return;
     }
 
-    // Validate card expiration
     const [expMonthStr, expYearStr] = cardExpiry.split('/');
     const expMonth = parseInt(expMonthStr, 10);
     let expYear = parseInt(expYearStr, 10);
@@ -207,7 +225,6 @@ export const CheckoutModal: React.FC<CheckoutModalProps> = ({
     }
     if (expYear < 100) expYear += 2000;
 
-    // Check Stripe Publishable Key configuration
     const pk = gateways.stripe.publishableKey?.trim();
     if (!pk || !pk.startsWith('pk_')) {
       setPaymentError({
@@ -222,10 +239,8 @@ export const CheckoutModal: React.FC<CheckoutModalProps> = ({
     setProcessingMethod('Validating Card with Stripe...');
 
     try {
-      // Connect Stripe using @stripe/stripe-js
       await loadStripe(pk);
 
-      // Perform real server-side card token/paymentMethod validation directly against Stripe's API
       const params = new URLSearchParams();
       params.append('type', 'card');
       params.append('card[number]', cleanCard);
@@ -253,8 +268,6 @@ export const CheckoutModal: React.FC<CheckoutModalProps> = ({
 
       const stripeData = await stripeRes.json();
 
-      // If Stripe returns error (e.g. card declined, invalid card number, invalid CVC),
-      // display the exact error message on the checkout form and DO NOT complete the order or unlock the report.
       if (!stripeRes.ok || stripeData.error || !stripeData.id) {
         const errorMsg =
           stripeData.error?.message ||
@@ -265,10 +278,9 @@ export const CheckoutModal: React.FC<CheckoutModalProps> = ({
           message: errorMsg,
         });
         setIsProcessing(false);
-        return; // CRITICAL: Stop execution, do NOT unlock report or call success handler!
+        return;
       }
 
-      // Only call handlePaymentSuccess() when Stripe successfully validates the card token/payment method
       const brand = stripeData.card?.brand ? stripeData.card.brand.toUpperCase() : 'CARD';
       const last4 = stripeData.card?.last4 || cleanCard.slice(-4);
       const paymentRef = stripeData.id;
@@ -283,6 +295,8 @@ export const CheckoutModal: React.FC<CheckoutModalProps> = ({
         packageId: plan.id,
         packageName: plan.name,
         amount: plan.price,
+        currencyCode: activeCurrencyCode,
+        formattedAmount: formattedTotal,
         deliveryTime: plan.deliveryTime || '6 HOURS DELIVERY',
         paymentMethod: `Stripe ${brand} [•••• ${last4}] (Ref: ${paymentRef})`,
         paymentStatus: 'Paid',
@@ -306,6 +320,8 @@ export const CheckoutModal: React.FC<CheckoutModalProps> = ({
         packageName: newOrder.packageName,
         packageId: newOrder.packageId,
         amount: newOrder.amount,
+        currencyCode: activeCurrencyCode,
+        formattedAmount: formattedTotal,
         paymentMethod: newOrder.paymentMethod,
         deliveryTime: newOrder.deliveryTime || plan.deliveryTime || '6 HOURS DELIVERY',
         createdAt: newOrder.createdAt,
@@ -353,6 +369,8 @@ export const CheckoutModal: React.FC<CheckoutModalProps> = ({
         packageId: plan.id,
         packageName: plan.name,
         amount: plan.price,
+        currencyCode: activeCurrencyCode,
+        formattedAmount: formattedTotal,
         deliveryTime: plan.deliveryTime || '6 HOURS DELIVERY',
         paymentMethod: 'Stripe Link (1-Click Instant)',
         paymentStatus: 'Paid',
@@ -376,6 +394,8 @@ export const CheckoutModal: React.FC<CheckoutModalProps> = ({
         packageName: newOrder.packageName,
         packageId: newOrder.packageId,
         amount: newOrder.amount,
+        currencyCode: activeCurrencyCode,
+        formattedAmount: formattedTotal,
         paymentMethod: newOrder.paymentMethod,
         deliveryTime: newOrder.deliveryTime || plan.deliveryTime || '6 HOURS DELIVERY',
         createdAt: newOrder.createdAt,
@@ -391,7 +411,7 @@ export const CheckoutModal: React.FC<CheckoutModalProps> = ({
     }
   };
 
-  // 2. Client-Side PayPal Payment Success Handler (Zero Backend Dependencies)
+  // 2. Client-Side PayPal Payment Success Handler
   const handlePaymentSuccess = (details: any) => {
     setIsProcessing(false);
     const captureId =
@@ -410,6 +430,8 @@ export const CheckoutModal: React.FC<CheckoutModalProps> = ({
         packageId: plan.id,
         packageName: plan.name,
         amount: plan.price,
+        currencyCode: activeCurrencyCode,
+        formattedAmount: formattedTotal,
         deliveryTime: plan.deliveryTime || '6 HOURS DELIVERY',
         paymentMethod: `PayPal Smart Checkout [${captureId}]`,
         paymentStatus: 'Paid',
@@ -432,6 +454,8 @@ export const CheckoutModal: React.FC<CheckoutModalProps> = ({
         packageName: newOrder.packageName,
         packageId: newOrder.packageId,
         amount: newOrder.amount,
+        currencyCode: activeCurrencyCode,
+        formattedAmount: formattedTotal,
         paymentMethod: newOrder.paymentMethod,
         deliveryTime: newOrder.deliveryTime || plan.deliveryTime || '6 HOURS DELIVERY',
         createdAt: newOrder.createdAt,
@@ -459,6 +483,8 @@ export const CheckoutModal: React.FC<CheckoutModalProps> = ({
         packageId: plan.id,
         packageName: plan.name,
         amount: plan.price,
+        currencyCode: activeCurrencyCode,
+        formattedAmount: formattedTotal,
         deliveryTime: plan.deliveryTime || '6 HOURS DELIVERY',
         paymentMethod: `${methodName} [Dev Simulator]`,
         paymentStatus: 'Paid',
@@ -482,6 +508,8 @@ export const CheckoutModal: React.FC<CheckoutModalProps> = ({
         packageName: newOrder.packageName,
         packageId: newOrder.packageId,
         amount: newOrder.amount,
+        currencyCode: activeCurrencyCode,
+        formattedAmount: formattedTotal,
         paymentMethod: newOrder.paymentMethod,
         deliveryTime: newOrder.deliveryTime || plan.deliveryTime || '6 HOURS DELIVERY',
         createdAt: newOrder.createdAt,
@@ -502,11 +530,11 @@ export const CheckoutModal: React.FC<CheckoutModalProps> = ({
             <div className="flex items-center gap-2">
               <span className="w-2 h-2 rounded-full bg-emerald-400"></span>
               <span className="text-[11px] font-mono tracking-wider text-slate-300 uppercase">
-                OFFICIAL ON-SITE ENCRYPTED CHECKOUT
+                OFFICIAL ON-SITE ENCRYPTED CHECKOUT ({activeMarket.flag} {activeCurrencyCode})
               </span>
             </div>
             <h2 className="text-xl font-black tracking-tight mt-1">
-              Unlock Full Vehicle History
+              Order Official Vehicle Audit
             </h2>
           </div>
           <button
@@ -530,10 +558,10 @@ export const CheckoutModal: React.FC<CheckoutModalProps> = ({
           </div>
           <div className="text-left sm:text-right">
             <span className="bg-yellow-100 text-yellow-800 text-[10px] font-black px-2 py-0.5 rounded uppercase">
-              {plan.name}
+              {plan.name} • {plan.deliveryTime || '6 HOURS DELIVERY'}
             </span>
             <div className="text-xl font-black text-slate-950 mt-1">
-              ${plan.price.toFixed(2)}
+              {formattedTotal}
             </div>
           </div>
         </div>
@@ -548,7 +576,7 @@ export const CheckoutModal: React.FC<CheckoutModalProps> = ({
                 Authorizing secure payment via {processingMethod}...
               </div>
               <p className="text-xs text-slate-500 max-w-sm mx-auto">
-                Official report is being compiled and dispatched to{' '}
+                Official report order is being confirmed for dispatch to{' '}
                 <span className="font-bold text-slate-800">{email}</span>.
               </p>
             </div>
@@ -630,13 +658,13 @@ export const CheckoutModal: React.FC<CheckoutModalProps> = ({
                   disabled={!isFormValid}
                   className="w-full py-4 px-6 rounded-xl bg-yellow-400 hover:bg-yellow-300 disabled:bg-slate-200 text-black disabled:text-slate-400 text-xs sm:text-sm font-black uppercase tracking-wider transition-all duration-200 flex items-center justify-center gap-2 cursor-pointer disabled:cursor-not-allowed shadow-md"
                 >
-                  <span>PROCEED TO PAYMENT</span>
+                  <span>PROCEED TO PAYMENT ({formattedTotal})</span>
                   <ChevronRight className="w-4 h-4 stroke-[3]" />
                 </button>
               </div>
             </form>
           ) : (
-            /* STEP 2: ON-SITE CHECKOUT PROVIDED DIRECTLY BY STRIPE & PAYPAL (NO FAKE READY-MADE CARD INPUTS) */
+            /* STEP 2: ON-SITE CHECKOUT */
             <div className="space-y-5 animate-fadeIn">
               {/* Summary Pill with Edit */}
               <div className="flex items-center justify-between p-3 bg-emerald-50 border border-emerald-200 rounded-xl text-xs">
@@ -754,7 +782,7 @@ export const CheckoutModal: React.FC<CheckoutModalProps> = ({
                         <span className="font-black text-sm tracking-tight text-black">link</span>
                         <span className="text-black/30 font-light mx-0.5">|</span>
                         <span className="text-xs font-semibold text-black">
-                          Pay with Stripe Link • ${plan.price.toFixed(2)}
+                          Pay with Stripe Link • {formattedTotal}
                         </span>
                       </button>
                       <p className="text-[10px] text-slate-400 text-center">
@@ -772,7 +800,7 @@ export const CheckoutModal: React.FC<CheckoutModalProps> = ({
                     <div className="h-px bg-slate-200 flex-1" />
                   </div>
 
-                  {/* 2. Direct Client-Side Card Elements (Zero Backend Calls) */}
+                  {/* 2. Direct Client-Side Card Elements */}
                   <form onSubmit={handlePayWithStripeCard} className="space-y-3 pt-1">
                     <div>
                       <label className="text-[10px] font-black text-slate-500 uppercase tracking-wider block mb-1">
@@ -847,7 +875,7 @@ export const CheckoutModal: React.FC<CheckoutModalProps> = ({
                       className="w-full py-3.5 px-6 rounded-xl bg-[#635bff] hover:bg-[#5346e0] active:bg-[#4338ca] text-white font-black text-xs uppercase tracking-wider transition-all shadow-md flex items-center justify-center gap-2.5 cursor-pointer active:scale-[0.99] disabled:opacity-60"
                     >
                       <CreditCard className="w-4 h-4 text-white" />
-                      <span>Pay ${plan.price.toFixed(2)} with Card</span>
+                      <span>Pay {formattedTotal} with Card</span>
                     </button>
                   </form>
 
@@ -937,12 +965,13 @@ export const CheckoutModal: React.FC<CheckoutModalProps> = ({
                     </div>
                   )}
 
-                  {/* Client-Side PayPal SDK Smart Buttons (100% Frontend - No Backend Required) */}
+                  {/* Client-Side PayPal SDK Smart Buttons */}
                   <div className="space-y-3">
                     <PayPalScriptProvider
+                      key={`paypal-${paypalSdkCurrency}-${paypalClientId}`}
                       options={{
                         clientId: paypalClientId,
-                        currency: activeCurrency,
+                        currency: paypalSdkCurrency,
                         intent: 'capture',
                       }}
                     >
@@ -955,14 +984,13 @@ export const CheckoutModal: React.FC<CheckoutModalProps> = ({
                             tagline: false,
                           }}
                           createOrder={(data, actions) => {
-                            const activeCurrency = (cartCurrency || selectedCurrency || 'USD').toUpperCase();
                             return actions.order.create({
                               intent: 'CAPTURE',
                               purchase_units: [
                                 {
                                   amount: {
-                                    value: cartTotal.toFixed(2),
-                                    currency_code: activeCurrency,
+                                    value: paypalOrderAmount.toFixed(2),
+                                    currency_code: paypalSdkCurrency,
                                   },
                                   description: `Vehicle History Report: ${plan.name} (VIN: ${report.specs.vin})`,
                                 },
@@ -979,9 +1007,8 @@ export const CheckoutModal: React.FC<CheckoutModalProps> = ({
                             console.error('PayPal Client SDK Error:', err);
                             setPaymentError({
                               gateway: 'paypal',
-                              title: 'PayPal Checkout Notice',
-                              message: 'PayPal payment could not be processed by the client SDK.',
-                              details: String(err || 'Check your PayPal Client ID in Admin Panel > Payment Gateways.'),
+                              title: 'PayPal Checkout Error',
+                              message: 'Could not initialize PayPal payment window. Ensure your PayPal Client ID is valid in Admin Settings.',
                             });
                           }}
                         />
@@ -989,19 +1016,19 @@ export const CheckoutModal: React.FC<CheckoutModalProps> = ({
                     </PayPalScriptProvider>
                   </div>
 
-                  <div className="text-center pt-1">
-                    <span className="text-[10px] text-slate-400 italic">
-                      Powered on-site by <span className="font-bold text-[#003087]">Pay</span><span className="font-bold text-[#0079c1]">Pal</span> • Instant Automated Verification
-                    </span>
+                  {/* Switch to Stripe option */}
+                  <div className="pt-1 text-center">
+                    <button
+                      type="button"
+                      onClick={() => setSelectedGateway('stripe')}
+                      className="text-[11px] font-bold text-[#635bff] hover:underline cursor-pointer inline-flex items-center gap-1"
+                    >
+                      <span>Or pay with Stripe Card / Link Checkout</span>
+                      <ArrowRight className="w-3 h-3" />
+                    </button>
                   </div>
                 </div>
               )}
-
-              {/* Direct Email Confirmation Notice */}
-              <div className="pt-2 text-center text-xs font-semibold text-slate-500">
-                ⚡ Official PDF report will be delivered directly to{' '}
-                <span className="font-bold text-slate-800">{email}</span>.
-              </div>
             </div>
           )}
         </div>

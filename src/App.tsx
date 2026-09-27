@@ -15,6 +15,7 @@ import { FaqPage } from './pages/FaqPage';
 import { SupportPage } from './pages/SupportPage';
 import { AdminPage } from './pages/AdminPage';
 import { CheckoutModal } from './components/CheckoutModal';
+import { PaymentSuccessModal, ConfirmedOrderData } from './components/PaymentSuccessModal';
 import { ChatWidget } from './components/ChatWidget';
 import { VinSearchLoading } from './components/VinSearchLoading';
 import { SiteLoadingScreen } from './components/SiteLoadingScreen';
@@ -53,6 +54,9 @@ export default function App() {
   const [isUnlocked, setIsUnlocked] = useState(false);
   const [unlockedPlan, setUnlockedPlan] = useState<ReportPlanId | null>(null);
   const [apiErrorMessage, setApiErrorMessage] = useState<string | null>(null);
+
+  // Payment Success Screen state (when redirected from gateway URL params)
+  const [redirectConfirmedOrder, setRedirectConfirmedOrder] = useState<ConfirmedOrderData | null>(null);
 
   // Search notification when redirected from pricing page
   const [searchPromptNotification, setSearchPromptNotification] = useState<string | null>(null);
@@ -115,9 +119,10 @@ export default function App() {
           try {
             const report = await decodeVin(targetVin);
             setCurrentReport(report);
-            setIsUnlocked(true);
-            setUnlockedPlan(planParam);
-            setCurrentPage('report');
+            // Do NOT auto-unlock instant report view so package delivery times are respected
+            setIsUnlocked(false);
+            setUnlockedPlan(null);
+            setCurrentPage('home');
 
             try {
               confetti({
@@ -127,8 +132,13 @@ export default function App() {
               });
             } catch {}
 
+            const pkgs = adminStore.getPackages();
+            const matchedPkg = pkgs.find((p) => p.id === planParam) || pkgs[0];
+            const activeMarket = adminStore.getActiveMarket();
+            const formattedAmt = adminStore.formatPackagePrice(matchedPkg, activeMarket.currencyCode);
+
             // Save verified order in admin store and dispatch official confirmation email
-            adminStore.saveOrder({
+            const savedOrder = adminStore.saveOrder({
               vin: targetVin,
               vehicleName: `${report.specs.year} ${report.specs.make} ${report.specs.model}`.trim(),
               customerName: 'Verified Cardholder',
@@ -136,11 +146,14 @@ export default function App() {
               phone: '+1 (555) 019-2831',
               mileage: '45,210',
               packageId: planParam,
-              packageName: planParam.toUpperCase() + ' PACKAGE',
-              amount: planParam === 'gold' ? 99.99 : planParam === 'dealer' ? 149.99 : 69.99,
+              packageName: matchedPkg.name,
+              amount: matchedPkg.price,
+              currencyCode: activeMarket.currencyCode,
+              formattedAmount: formattedAmt,
+              deliveryTime: matchedPkg.deliveryTime || '6 HOURS DELIVERY',
               paymentMethod: isStripeSuccess ? 'Stripe Checkout (Live Verified)' : 'PayPal Smart Checkout (Live Verified)',
               paymentStatus: 'Paid',
-              deliveryStatus: 'Emailed & Completed',
+              deliveryStatus: 'Pending Manual Send',
               reportSummary: {
                 specsFound: report.recordsFoundCount || 48,
                 titleStatus: 'Clean Title (NMVTIS Verified)',
@@ -148,8 +161,25 @@ export default function App() {
                 score: report.overallScore || 89,
               },
             });
+
+            setRedirectConfirmedOrder({
+              orderNumber: savedOrder.orderNumber,
+              vin: savedOrder.vin,
+              vehicleName: savedOrder.vehicleName,
+              customerName: savedOrder.customerName,
+              email: savedOrder.email,
+              phone: savedOrder.phone,
+              packageName: savedOrder.packageName,
+              packageId: savedOrder.packageId,
+              amount: savedOrder.amount,
+              currencyCode: savedOrder.currencyCode,
+              formattedAmount: savedOrder.formattedAmount,
+              paymentMethod: savedOrder.paymentMethod,
+              deliveryTime: savedOrder.deliveryTime || matchedPkg.deliveryTime || '6 HOURS DELIVERY',
+              createdAt: savedOrder.createdAt,
+            });
           } catch (err) {
-            console.error('Error unlocking report from payment return:', err);
+            console.error('Error recording payment return:', err);
           }
         })();
         return;
@@ -319,12 +349,11 @@ export default function App() {
     }, 150);
   };
 
-  const handlePaymentSuccess = (planId: ReportPlanId) => {
-    setIsUnlocked(true);
-    setUnlockedPlan(planId);
-    if (currentPage !== 'report') {
-      navigateTo('report');
-    }
+  const handlePaymentSuccess = (_planId: ReportPlanId) => {
+    // Do NOT unlock instant report view or show download PDF buttons;
+    // reports are delivered via email according to package delivery timeframe.
+    setIsUnlocked(false);
+    setUnlockedPlan(null);
   };
 
   const handleClearHistory = () => {
@@ -348,7 +377,7 @@ export default function App() {
 
   return (
     <div className="min-h-screen bg-[#070b11] text-slate-100 flex flex-col font-sans selection:bg-yellow-400 selection:text-black">
-      {/* Initial Homepage Loading Animation (matching Screenshot 1) */}
+      {/* Initial Homepage Loading Animation */}
       {isInitialSiteLoading && (
         <SiteLoadingScreen onComplete={() => setIsInitialSiteLoading(false)} />
       )}
@@ -387,7 +416,7 @@ export default function App() {
 
       {/* Main Page Routing Switch */}
       <main className="flex-1 w-full">
-        {/* HOME PAGE: Complete home sections matching uploaded screenshots */}
+        {/* HOME PAGE */}
         {currentPage === 'home' && (
           <>
             <HeroSection onSearch={handleSearch} isLoading={isLoading} />
@@ -455,7 +484,7 @@ export default function App() {
           />
         )}
 
-        {/* REVIEW ORDER / GUEST CHECKOUT PAGE (matching user screenshot) */}
+        {/* REVIEW ORDER / GUEST CHECKOUT PAGE */}
         {currentPage === 'checkout' && (
           <ReviewOrderPage
             selectedPlanId={selectedPlanForCheckout}
@@ -512,7 +541,7 @@ export default function App() {
       {/* Floating Chat Widget */}
       {currentPage !== 'admin' && <ChatWidget />}
 
-      {/* Federal Database Query Loading Screen matching user screenshot */}
+      {/* Federal Database Query Loading Screen */}
       {isSearchingLoading && (
         <VinSearchLoading
           vin={searchingVin}
@@ -530,6 +559,19 @@ export default function App() {
         selectedPlanId={selectedPlanForCheckout}
         onPaymentSuccess={handlePaymentSuccess}
       />
+
+      {/* Payment Success Screen Modal (when returning from redirect payment) */}
+      {redirectConfirmedOrder && (
+        <PaymentSuccessModal
+          isOpen={true}
+          onClose={() => setRedirectConfirmedOrder(null)}
+          order={redirectConfirmedOrder}
+          onNavigateHome={() => {
+            setRedirectConfirmedOrder(null);
+            navigateTo('home');
+          }}
+        />
+      )}
 
       {/* NHTSA API Error Alert Dialog */}
       {apiErrorMessage && (

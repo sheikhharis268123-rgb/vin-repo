@@ -5,12 +5,8 @@ import {
   Car,
   Mail,
   ShieldCheck,
-  Printer,
   Home,
-  Headphones,
-  Sparkles,
   X,
-  FileText,
 } from 'lucide-react';
 import confetti from 'canvas-confetti';
 
@@ -24,6 +20,8 @@ export interface ConfirmedOrderData {
   packageName: string;
   packageId: string;
   amount: number;
+  currencyCode?: string;
+  currencySymbol?: string;
   paymentMethod: string;
   deliveryTime: string;
   createdAt?: string;
@@ -43,8 +41,6 @@ export const PaymentSuccessModal: React.FC<PaymentSuccessModalProps> = ({
   onClose,
   order,
   onNavigateHome,
-  onViewReportPreview,
-  onNavigateSupport,
 }) => {
   useEffect(() => {
     if (isOpen) {
@@ -60,9 +56,12 @@ export const PaymentSuccessModal: React.FC<PaymentSuccessModalProps> = ({
 
   if (!isOpen || !order) return null;
 
-  const handlePrint = () => {
-    window.print();
-  };
+  const currencySymbol = order.currencySymbol || '$';
+  const currencyCode = order.currencyCode || 'USD';
+  const formattedAmount =
+    currencyCode === 'PKR' || currencyCode === 'INR'
+      ? `${currencySymbol}${Math.round(order.amount).toLocaleString()} ${currencyCode}`
+      : `${currencySymbol}${order.amount.toFixed(2)} ${currencyCode}`;
 
   return (
     <div className="fixed inset-0 z-[100] bg-black/85 backdrop-blur-md flex items-center justify-center p-3 sm:p-5 overflow-y-auto animate-fadeIn">
@@ -74,7 +73,10 @@ export const PaymentSuccessModal: React.FC<PaymentSuccessModalProps> = ({
         {/* Close Button */}
         <button
           type="button"
-          onClick={onClose}
+          onClick={() => {
+            onClose();
+            if (onNavigateHome) onNavigateHome();
+          }}
           className="absolute top-5 right-5 p-2 rounded-full bg-white/5 hover:bg-white/10 text-slate-400 hover:text-white transition-colors cursor-pointer"
           title="Close confirmation"
         >
@@ -96,7 +98,7 @@ export const PaymentSuccessModal: React.FC<PaymentSuccessModalProps> = ({
             PAYMENT SUCCESSFUL!
           </h2>
           <p className="text-xs sm:text-sm text-slate-300 font-medium max-w-md mx-auto">
-            Your vehicle audit order has been successfully confirmed.
+            Thank you for your purchase. Your vehicle audit order is now queued for official record compilation and email delivery.
           </p>
         </div>
 
@@ -107,7 +109,7 @@ export const PaymentSuccessModal: React.FC<PaymentSuccessModalProps> = ({
           <div className="flex items-center justify-between flex-wrap gap-2">
             <div className="flex items-center gap-2 text-yellow-400 font-black text-xs sm:text-sm uppercase tracking-wider">
               <Clock className="w-4 h-4 text-yellow-400 animate-pulse" />
-              <span>REPORT DELIVERY TIME</span>
+              <span>SCHEDULED REPORT DELIVERY TIME</span>
             </div>
             <span className="px-3 py-1 rounded-full bg-yellow-400 text-slate-950 font-black text-xs uppercase tracking-tight shadow-xs">
               {order.deliveryTime || '6 HOURS DELIVERY'}
@@ -115,13 +117,13 @@ export const PaymentSuccessModal: React.FC<PaymentSuccessModalProps> = ({
           </div>
 
           <p className="text-xs sm:text-[13px] text-slate-200 leading-relaxed font-medium">
-            <span className="text-yellow-400 font-bold">Manual Verification Notice: </span>
-            Our automotive specialists are pulling official data from federal NMVTIS, 50-state DMV registries, insurance total loss archives, and police records.
-            Administrator will compile the complete records and manually dispatch the official vehicle report to your email:{' '}
+            <span className="text-yellow-400 font-bold">Official Email Delivery Notice: </span>
+            Our automotive specialists are pulling official records from federal NMVTIS, 50-state DMV registries, insurance total loss archives, and police databases.
+            Your complete certified PDF report will be delivered directly to your email inbox:{' '}
             <span className="text-white font-mono font-bold underline decoration-yellow-400">
               {order.email}
             </span>{' '}
-            within <span className="text-yellow-400 font-black uppercase">{order.deliveryTime || '6 HOURS'}</span>.
+            within your selected package delivery window (<span className="text-yellow-400 font-black uppercase">{order.deliveryTime || '6 HOURS DELIVERY'}</span>).
           </p>
         </div>
 
@@ -162,7 +164,7 @@ export const PaymentSuccessModal: React.FC<PaymentSuccessModalProps> = ({
             <div>
               <span className="text-slate-400 block text-[11px]">Amount Paid:</span>
               <span className="font-mono font-black text-emerald-400 text-sm mt-0.5 block">
-                ${order.amount.toFixed(2)} USD
+                {formattedAmount}
               </span>
             </div>
 
@@ -174,9 +176,9 @@ export const PaymentSuccessModal: React.FC<PaymentSuccessModalProps> = ({
             </div>
 
             <div>
-              <span className="text-slate-400 block text-[11px]">Target Delivery:</span>
+              <span className="text-slate-400 block text-[11px]">Target Delivery Window:</span>
               <span className="font-bold text-yellow-400 text-xs mt-0.5 block uppercase">
-                Within {order.deliveryTime || '6 Hours'}
+                {order.deliveryTime || '6 HOURS DELIVERY'}
               </span>
             </div>
           </div>
@@ -190,46 +192,22 @@ export const PaymentSuccessModal: React.FC<PaymentSuccessModalProps> = ({
           </span>
           <span className="flex items-center gap-1.5">
             <Mail className="w-4 h-4 text-yellow-400" />
-            <span>Admin Manual Dispatch</span>
+            <span>Delivered to {order.email}</span>
           </span>
         </div>
 
-        {/* Action Buttons */}
-        <div className="pt-2 flex flex-col sm:flex-row items-center gap-3">
+        {/* Single Action Button — No instant report view or PDF download buttons */}
+        <div className="pt-2">
           <button
             type="button"
             onClick={() => {
               onClose();
               if (onNavigateHome) onNavigateHome();
             }}
-            className="w-full sm:flex-1 py-3.5 rounded-full bg-yellow-400 hover:bg-yellow-300 text-black font-black text-xs uppercase tracking-wider transition-all duration-200 shadow-lg shadow-yellow-400/20 flex items-center justify-center gap-2 cursor-pointer active:scale-95"
+            className="w-full py-4 rounded-full bg-yellow-400 hover:bg-yellow-300 text-black font-black text-xs sm:text-sm uppercase tracking-wider transition-all duration-200 shadow-lg shadow-yellow-400/20 flex items-center justify-center gap-2 cursor-pointer active:scale-95"
           >
             <Home className="w-4 h-4" />
             <span>Return to Home</span>
-          </button>
-
-          {onViewReportPreview && (
-            <button
-              type="button"
-              onClick={() => {
-                onClose();
-                onViewReportPreview();
-              }}
-              className="w-full sm:w-auto px-5 py-3.5 rounded-full bg-white/10 hover:bg-white/20 text-white font-bold text-xs uppercase tracking-wider transition-colors flex items-center justify-center gap-2 cursor-pointer border border-white/15"
-            >
-              <FileText className="w-4 h-4 text-yellow-400" />
-              <span>View Report</span>
-            </button>
-          )}
-
-          <button
-            type="button"
-            onClick={handlePrint}
-            className="w-full sm:w-auto px-4 py-3.5 rounded-full bg-white/5 hover:bg-white/10 text-slate-300 hover:text-white font-bold text-xs uppercase tracking-wider transition-colors flex items-center justify-center gap-1.5 cursor-pointer border border-white/10"
-            title="Print Receipt"
-          >
-            <Printer className="w-4 h-4" />
-            <span className="hidden sm:inline">Print</span>
           </button>
         </div>
       </div>

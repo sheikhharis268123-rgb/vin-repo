@@ -1,9 +1,8 @@
 import React, { useState } from 'react';
-import { ArrowLeft, Search, ShieldCheck, FileText, CheckCircle2, RotateCcw, Download } from 'lucide-react';
+import { ArrowLeft, Search } from 'lucide-react';
 import { FullVehicleReport, ReportPlanId } from '../types';
 import { ReportDashboard } from '../components/ReportDashboard';
 import { UnlockedReportView } from '../components/UnlockedReportView';
-import { generateVehicleReportPdf } from '../services/pdfReportGenerator';
 
 interface ReportPageProps {
   report: FullVehicleReport;
@@ -65,18 +64,6 @@ export const ReportPage: React.FC<ReportPageProps> = ({
           </div>
 
           <div className="flex items-center gap-2">
-            {isUnlocked && (
-              <button
-                type="button"
-                onClick={() => generateVehicleReportPdf(report)}
-                className="px-3.5 py-1.5 rounded-lg bg-yellow-400 hover:bg-yellow-300 text-black text-xs font-black uppercase tracking-wider transition-all shadow-sm flex items-center gap-1.5 cursor-pointer shrink-0"
-              >
-                <Download className="w-3.5 h-3.5 stroke-[2.5]" />
-                <span className="hidden sm:inline">Download PDF</span>
-                <span className="sm:hidden">PDF</span>
-              </button>
-            )}
-
             {/* Quick lookup another VIN without leaving */}
             <form onSubmit={handleQuickSearchSubmit} className="flex items-center gap-1.5">
               <div className="relative flex items-center">
@@ -113,7 +100,7 @@ export const ReportPage: React.FC<ReportPageProps> = ({
         </div>
       </div>
 
-      {/* Main Report Dashboard (matches Screenshot 2) */}
+      {/* Main Report Dashboard */}
       <ReportDashboard
         report={report}
         isUnlocked={isUnlocked}
@@ -125,7 +112,7 @@ export const ReportPage: React.FC<ReportPageProps> = ({
         }}
       />
 
-      {/* Unlocked View (when paid) */}
+      {/* Unlocked View (only when Admin clicks View in Admin Panel) */}
       {isUnlocked && (
         <UnlockedReportView
           report={report}

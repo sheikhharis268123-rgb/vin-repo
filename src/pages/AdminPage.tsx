@@ -40,6 +40,9 @@ import {
   LogOut,
   Loader2,
   ShieldAlert,
+  Globe,
+  CheckSquare,
+  Square,
 } from 'lucide-react';
 import {
   adminStore,
@@ -49,6 +52,10 @@ import {
   GatewaySettings,
   AdminEmailSettings,
   EmailLog,
+  CurrencySettings,
+  CountryMarketConfig,
+  SupportedCurrencyCode,
+  SUPPORTED_COUNTRIES,
   validateStripeCredentials,
   validatePaypalCredentials,
 } from '../services/adminStore';
@@ -79,7 +86,7 @@ export const AdminPage: React.FC<AdminPageProps> = ({
   const [authError, setAuthError] = useState<string | null>(null);
 
   // Active Tab
-  const [activeTab, setActiveTab] = useState<'overview' | 'orders' | 'tickets' | 'packages' | 'gateways' | 'emails'>('overview');
+  const [activeTab, setActiveTab] = useState<'overview' | 'orders' | 'tickets' | 'packages' | 'currency' | 'gateways' | 'emails'>('overview');
 
   // State loaded from adminStore
   const [orders, setOrders] = useState<ReportOrder[]>([]);
@@ -88,6 +95,13 @@ export const AdminPage: React.FC<AdminPageProps> = ({
   const [gateways, setGateways] = useState<GatewaySettings>(adminStore.getGateways());
   const [emailSettings, setEmailSettings] = useState<AdminEmailSettings>(() => adminStore.getEmailSettings());
   const [emailLogs, setEmailLogs] = useState<EmailLog[]>(() => adminStore.getEmailLogs());
+  const [currencySettings, setCurrencySettings] = useState<CurrencySettings>(() => adminStore.getCurrencySettings());
+
+  // Bulk Selection State for Report Orders & Support Tickets
+  const [selectedOrderIds, setSelectedOrderIds] = useState<string[]>([]);
+  const [bulkOrderPaymentStatus, setBulkOrderPaymentStatus] = useState<string>('Paid');
+  const [bulkOrderDeliveryStatus, setBulkOrderDeliveryStatus] = useState<string>('Delivered & Emailed');
+  const [selectedTicketIds, setSelectedTicketIds] = useState<string[]>([]);
 
   // Email Config Form State
   const [adminEmailInput, setAdminEmailInput] = useState(() => adminStore.getEmailSettings().adminEmail);
@@ -176,6 +190,7 @@ export const AdminPage: React.FC<AdminPageProps> = ({
     setAutoReplyCustomerInput(freshEmails.autoReplyToCustomer);
     setOrderDispatchInput(freshEmails.orderReportAutoDispatch ?? true);
     setEmailLogs(adminStore.getEmailLogs());
+    setCurrencySettings(adminStore.getCurrencySettings());
   };
 
   useEffect(() => {
@@ -184,8 +199,16 @@ export const AdminPage: React.FC<AdminPageProps> = ({
       setEmailSettings(adminStore.getEmailSettings());
       setEmailLogs(adminStore.getEmailLogs());
     };
+    const handleCurrencyUpdate = () => {
+      setCurrencySettings(adminStore.getCurrencySettings());
+      setPackages(adminStore.getPackages());
+    };
     window.addEventListener('wc_emails_updated', handleEmailUpdate);
-    return () => window.removeEventListener('wc_emails_updated', handleEmailUpdate);
+    window.addEventListener('wc_currency_updated', handleCurrencyUpdate);
+    return () => {
+      window.removeEventListener('wc_emails_updated', handleEmailUpdate);
+      window.removeEventListener('wc_currency_updated', handleCurrencyUpdate);
+    };
   }, []);
 
   // Compute Overview Metrics
@@ -238,6 +261,152 @@ export const AdminPage: React.FC<AdminPageProps> = ({
     if (selectedOrder && selectedOrder.id === orderId) {
       setSelectedOrder({ ...selectedOrder, deliveryStatus: status });
     }
+  };
+
+  // Order Selection & Bulk Management Handlers
+  const handleToggleSelectOrder = (orderId: string) => {
+    setSelectedOrderIds((prev) =>
+      prev.includes(orderId) ? prev.filter((id) => id !== orderId) : [...prev, orderId]
+    );
+  };
+
+  const handleSelectAllOrders = () => {
+    const visibleIds = filteredOrders.map((o) => o.id);
+    const allSelected = visibleIds.length > 0 && visibleIds.every((id) => selectedOrderIds.includes(id));
+    if (allSelected) {
+      setSelectedOrderIds((prev) => prev.filter((id) => !visibleIds.includes(id)));
+    } else {
+      setSelectedOrderIds((prev) => Array.from(new Set([...prev, ...visibleIds])));
+    }
+  };
+
+  const handleDeleteSingleOrder = (orderId: string, orderNum: string) => {
+    adminStore.deleteOrder(orderId);
+    setOrders(adminStore.getOrders());
+    setSelectedOrderIds((prev) => prev.filter((id) => id !== orderId));
+    if (selectedOrder && selectedOrder.id === orderId) {
+      setSelectedOrder(null);
+    }
+    showNotification(`Deleted report order ${orderNum}`);
+  };
+
+  const handleDeleteSelectedOrders = () => {
+    if (selectedOrderIds.length === 0) return;
+    const count = selectedOrderIds.length;
+    adminStore.deleteOrders(selectedOrderIds);
+    setOrders(adminStore.getOrders());
+    if (selectedOrder && selectedOrderIds.includes(selectedOrder.id)) {
+      setSelectedOrder(null);
+    }
+    setSelectedOrderIds([]);
+    showNotification(`Deleted ${count} selected report order(s)`);
+  };
+
+  const handleBulkUpdateOrderPayment = () => {
+    if (selectedOrderIds.length === 0) return;
+    adminStore.bulkUpdateOrdersStatus(selectedOrderIds, bulkOrderPaymentStatus, undefined);
+    setOrders(adminStore.getOrders());
+    showNotification(`Updated payment status to "${bulkOrderPaymentStatus}" for ${selectedOrderIds.length} order(s)`);
+  };
+
+  const handleBulkUpdateOrderDelivery = () => {
+    if (selectedOrderIds.length === 0) return;
+    adminStore.bulkUpdateOrdersStatus(selectedOrderIds, undefined, bulkOrderDeliveryStatus);
+    setOrders(adminStore.getOrders());
+    showNotification(`Updated delivery status to "${bulkOrderDeliveryStatus}" for ${selectedOrderIds.length} order(s)`);
+  };
+
+  // Ticket Selection & Bulk Management Handlers
+  const handleToggleSelectTicket = (ticketId: string) => {
+    setSelectedTicketIds((prev) =>
+      prev.includes(ticketId) ? prev.filter((id) => id !== ticketId) : [...prev, ticketId]
+    );
+  };
+
+  const handleSelectAllTickets = () => {
+    const visibleIds = filteredTickets.map((t) => t.id);
+    const allSelected = visibleIds.length > 0 && visibleIds.every((id) => selectedTicketIds.includes(id));
+    if (allSelected) {
+      setSelectedTicketIds((prev) => prev.filter((id) => !visibleIds.includes(id)));
+    } else {
+      setSelectedTicketIds((prev) => Array.from(new Set([...prev, ...visibleIds])));
+    }
+  };
+
+  const handleDeleteSingleTicket = (ticketId: string, ticketNum: string) => {
+    adminStore.deleteTicket(ticketId);
+    setTickets(adminStore.getTickets());
+    setSelectedTicketIds((prev) => prev.filter((id) => id !== ticketId));
+    showNotification(`Deleted support ticket ${ticketNum}`);
+  };
+
+  const handleDeleteSelectedTickets = () => {
+    if (selectedTicketIds.length === 0) return;
+    const count = selectedTicketIds.length;
+    adminStore.deleteTickets(selectedTicketIds);
+    setTickets(adminStore.getTickets());
+    setSelectedTicketIds([]);
+    showNotification(`Deleted ${count} selected support ticket(s)`);
+  };
+
+  const handleBulkUpdateTicketStatus = (status: SupportTicket['status']) => {
+    if (selectedTicketIds.length === 0) return;
+    adminStore.bulkUpdateTicketsStatus(selectedTicketIds, status);
+    setTickets(adminStore.getTickets());
+    showNotification(`Marked ${selectedTicketIds.length} ticket(s) as ${status.toUpperCase()}`);
+  };
+
+  // Currency & Country Pricing Handlers
+  const handleSaveCurrencySettings = () => {
+    adminStore.saveCurrencySettings(currencySettings);
+    showNotification('✓ Currency rates & country pricing rules saved and published to site!');
+  };
+
+  const handleUpdateCurrencyRate = (code: string, newRate: number) => {
+    setCurrencySettings((prev) => ({
+      ...prev,
+      markets: prev.markets.map((m) =>
+        m.currencyCode === code ? { ...m, exchangeRate: Math.max(0.0001, newRate) } : m
+      ),
+    }));
+  };
+
+  const handleUpdateCurrencySymbol = (code: string, newSymbol: string) => {
+    setCurrencySettings((prev) => ({
+      ...prev,
+      markets: prev.markets.map((m) =>
+        m.currencyCode === code ? { ...m, currencySymbol: newSymbol } : m
+      ),
+    }));
+  };
+
+  const handleUpdatePackageCustomCurrencyPrice = (pkgId: string, currencyCode: string, valStr: string) => {
+    const targetPkg = packages.find((p) => p.id === pkgId);
+    if (!targetPkg) return;
+    const currentCustom: Partial<Record<SupportedCurrencyCode, number>> = {
+      ...(targetPkg.currencyPrices || {}),
+    };
+    const key = currencyCode as SupportedCurrencyCode;
+    if (valStr.trim() === '') {
+      delete currentCustom[key];
+    } else {
+      const parsed = parseFloat(valStr);
+      if (!isNaN(parsed) && parsed >= 0) {
+        currentCustom[key] = parsed;
+      }
+    }
+    const updatedPkg: EditablePackage = {
+      ...targetPkg,
+      currencyPrices: currentCustom,
+    };
+    adminStore.savePackage(updatedPkg);
+    setPackages(adminStore.getPackages());
+  };
+
+  const handleResetCurrencyDefaults = () => {
+    const reset = adminStore.resetCurrencySettingsToDefault();
+    setCurrencySettings(reset);
+    showNotification('Currency settings & exchange rates reset to defaults.');
   };
 
   // Manual Dispatch State & Handler
@@ -838,6 +1007,21 @@ export const AdminPage: React.FC<AdminPageProps> = ({
             </button>
 
             <button
+              onClick={() => setActiveTab('currency')}
+              className={`px-4 py-3 border-b-2 flex items-center gap-2 transition-all cursor-pointer shrink-0 ${
+                activeTab === 'currency'
+                  ? 'border-slate-900 text-slate-900'
+                  : 'border-transparent text-slate-500 hover:text-slate-800'
+              }`}
+            >
+              <Globe className="w-4 h-4 text-amber-500" />
+              <span>Currency &amp; Country Pricing</span>
+              <span className="ml-1 px-1.5 py-0.2 rounded-full text-[10px] bg-amber-100 text-amber-900 font-mono font-bold">
+                {currencySettings.markets.length} Markets
+              </span>
+            </button>
+
+            <button
               onClick={() => setActiveTab('gateways')}
               className={`px-4 py-3 border-b-2 flex items-center gap-2 transition-all cursor-pointer shrink-0 ${
                 activeTab === 'gateways'
@@ -1087,8 +1271,25 @@ export const AdminPage: React.FC<AdminPageProps> = ({
                 </p>
               </div>
 
-              {/* Filters */}
-              <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-3">
+              {/* Filters & Select All Controls */}
+              <div className="flex flex-wrap items-center gap-3">
+                <button
+                  type="button"
+                  onClick={handleSelectAllOrders}
+                  className="px-3.5 py-2 rounded-xl border border-slate-300 bg-slate-50 hover:bg-slate-100 text-slate-800 font-bold text-xs flex items-center gap-2 cursor-pointer transition-colors"
+                >
+                  {filteredOrders.length > 0 && filteredOrders.every((o) => selectedOrderIds.includes(o.id)) ? (
+                    <CheckSquare className="w-4 h-4 text-amber-600" />
+                  ) : (
+                    <Square className="w-4 h-4 text-slate-400" />
+                  )}
+                  <span>
+                    {filteredOrders.length > 0 && filteredOrders.every((o) => selectedOrderIds.includes(o.id))
+                      ? 'Deselect All'
+                      : `Select All (${filteredOrders.length})`}
+                  </span>
+                </button>
+
                 <div className="relative">
                   <Search className="w-4 h-4 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2 pointer-events-none" />
                   <input
@@ -1106,13 +1307,90 @@ export const AdminPage: React.FC<AdminPageProps> = ({
                   className="bg-slate-50 border border-slate-300 focus:bg-white focus:border-slate-900 rounded-xl px-3 py-2 text-xs text-slate-900 font-semibold focus:outline-none cursor-pointer"
                 >
                   <option value="all">All Packages</option>
-                  <option value="standard">Standard ($39.99)</option>
-                  <option value="silver">Silver ($69.99)</option>
-                  <option value="gold">Gold ($99.99)</option>
-                  <option value="dealer">Dealer ($149.99)</option>
+                  {packages.map((p) => (
+                    <option key={p.id} value={p.id}>
+                      {p.name} (${p.price.toFixed(2)})
+                    </option>
+                  ))}
                 </select>
               </div>
             </div>
+
+            {/* Bulk Actions Management Bar for Selected Report Orders */}
+            {selectedOrderIds.length > 0 && (
+              <div className="bg-slate-900 text-white rounded-2xl p-4 shadow-lg flex flex-col lg:flex-row lg:items-center justify-between gap-4 animate-fadeIn border border-slate-800">
+                <div className="flex items-center gap-3">
+                  <span className="px-3 py-1 rounded-lg bg-amber-400 text-slate-950 font-black text-xs">
+                    {selectedOrderIds.length} SELECTED
+                  </span>
+                  <span className="text-xs text-slate-300 font-medium">
+                    Manage or delete selected report orders in bulk:
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => setSelectedOrderIds([])}
+                    className="text-xs text-slate-400 hover:text-white underline cursor-pointer ml-1"
+                  >
+                    Clear Selection
+                  </button>
+                </div>
+
+                <div className="flex flex-wrap items-center gap-2.5">
+                  {/* Bulk Payment Status */}
+                  <div className="flex items-center bg-slate-800 rounded-xl p-1 border border-slate-700">
+                    <select
+                      value={bulkOrderPaymentStatus}
+                      onChange={(e) => setBulkOrderPaymentStatus(e.target.value)}
+                      className="bg-transparent text-white text-xs font-bold px-2.5 py-1.5 focus:outline-none cursor-pointer"
+                    >
+                      <option value="Paid" className="text-slate-900">Payment: Paid</option>
+                      <option value="Pending" className="text-slate-900">Payment: Pending</option>
+                      <option value="Failed" className="text-slate-900">Payment: Failed</option>
+                      <option value="Refunded" className="text-slate-900">Payment: Refunded</option>
+                      <option value="Manual Verified" className="text-slate-900">Payment: Manual Verified</option>
+                    </select>
+                    <button
+                      type="button"
+                      onClick={handleBulkUpdateOrderPayment}
+                      className="px-3 py-1.5 rounded-lg bg-slate-700 hover:bg-slate-600 text-white text-[11px] font-bold cursor-pointer transition-colors"
+                    >
+                      Apply
+                    </button>
+                  </div>
+
+                  {/* Bulk Delivery Status */}
+                  <div className="flex items-center bg-slate-800 rounded-xl p-1 border border-slate-700">
+                    <select
+                      value={bulkOrderDeliveryStatus}
+                      onChange={(e) => setBulkOrderDeliveryStatus(e.target.value)}
+                      className="bg-transparent text-white text-xs font-bold px-2.5 py-1.5 focus:outline-none cursor-pointer"
+                    >
+                      <option value="Pending Manual Send" className="text-slate-900">Delivery: Pending Manual Send</option>
+                      <option value="Delivered & Emailed" className="text-slate-900">Delivery: Delivered &amp; Emailed</option>
+                      <option value="Processing Dispatch" className="text-slate-900">Delivery: Processing Dispatch</option>
+                      <option value="Failed" className="text-slate-900">Delivery: Failed</option>
+                    </select>
+                    <button
+                      type="button"
+                      onClick={handleBulkUpdateOrderDelivery}
+                      className="px-3 py-1.5 rounded-lg bg-slate-700 hover:bg-slate-600 text-white text-[11px] font-bold cursor-pointer transition-colors"
+                    >
+                      Apply
+                    </button>
+                  </div>
+
+                  {/* Bulk Delete Button */}
+                  <button
+                    type="button"
+                    onClick={handleDeleteSelectedOrders}
+                    className="px-4 py-2 rounded-xl bg-rose-600 hover:bg-rose-500 text-white font-black text-xs uppercase tracking-wider flex items-center gap-1.5 cursor-pointer shadow-sm transition-colors"
+                  >
+                    <Trash2 className="w-3.5 h-3.5" />
+                    <span>Delete Selected ({selectedOrderIds.length})</span>
+                  </button>
+                </div>
+              </div>
+            )}
 
             {/* Orders Table */}
             <div className="bg-white border border-slate-200 rounded-2xl shadow-sm overflow-hidden">
@@ -1120,7 +1398,19 @@ export const AdminPage: React.FC<AdminPageProps> = ({
                 <table className="w-full text-left border-collapse text-xs">
                   <thead>
                     <tr className="bg-slate-50/80 border-b border-slate-200 text-[11px] font-bold uppercase tracking-wider text-slate-600">
-                      <th className="py-3.5 px-4 sm:px-6">Order #</th>
+                      <th className="py-3.5 pl-4 pr-2 w-10">
+                        <input
+                          type="checkbox"
+                          checked={
+                            filteredOrders.length > 0 &&
+                            filteredOrders.every((o) => selectedOrderIds.includes(o.id))
+                          }
+                          onChange={handleSelectAllOrders}
+                          className="w-4 h-4 rounded border-slate-300 text-slate-900 focus:ring-slate-900 cursor-pointer"
+                          title="Select All Orders"
+                        />
+                      </th>
+                      <th className="py-3.5 px-4">Order #</th>
                       <th className="py-3.5 px-4">Vehicle &amp; VIN</th>
                       <th className="py-3.5 px-4">Customer Details</th>
                       <th className="py-3.5 px-4">Mileage</th>
@@ -1133,18 +1423,32 @@ export const AdminPage: React.FC<AdminPageProps> = ({
                   <tbody className="divide-y divide-slate-100">
                     {filteredOrders.length === 0 ? (
                       <tr>
-                        <td colSpan={8} className="py-12 text-center text-slate-400">
+                        <td colSpan={9} className="py-12 text-center text-slate-400">
                           No report orders found matching your search.
                         </td>
                       </tr>
                     ) : (
-                      filteredOrders.map((order) => (
+                      filteredOrders.map((order) => {
+                        const isOrderSelected = selectedOrderIds.includes(order.id);
+                        return (
                         <tr
                           key={order.id}
-                          className="hover:bg-slate-50/70 transition-colors"
+                          className={`transition-colors ${
+                            isOrderSelected ? 'bg-amber-50/60 hover:bg-amber-50' : 'hover:bg-slate-50/70'
+                          }`}
                         >
+                          {/* Select Checkbox */}
+                          <td className="py-4 pl-4 pr-2">
+                            <input
+                              type="checkbox"
+                              checked={isOrderSelected}
+                              onChange={() => handleToggleSelectOrder(order.id)}
+                              className="w-4 h-4 rounded border-slate-300 text-slate-900 focus:ring-slate-900 cursor-pointer"
+                            />
+                          </td>
+
                           {/* Order Number */}
-                          <td className="py-4 px-4 sm:px-6 font-mono font-bold text-slate-900 whitespace-nowrap">
+                          <td className="py-4 px-4 font-mono font-bold text-slate-900 whitespace-nowrap">
                             <div>{order.orderNumber}</div>
                             <div className="text-[10px] text-slate-400 font-sans font-normal">
                               {order.createdAt}
@@ -1184,7 +1488,7 @@ export const AdminPage: React.FC<AdminPageProps> = ({
                           <td className="py-4 px-4 whitespace-nowrap">
                             <span className="font-bold text-slate-900 block">{order.packageName}</span>
                             <span className="text-[11px] font-mono text-slate-500 block">
-                              ${order.amount.toFixed(2)}
+                              {order.formattedAmount ? `${order.formattedAmount} ($${order.amount.toFixed(2)})` : `$${order.amount.toFixed(2)}`}
                             </span>
                             <span className="inline-flex items-center gap-1 text-[10px] font-bold text-amber-800 bg-amber-50 px-2 py-0.5 rounded-full border border-amber-200 mt-1">
                               <Clock className="w-3 h-3 text-amber-600 shrink-0" />
@@ -1276,10 +1580,19 @@ export const AdminPage: React.FC<AdminPageProps> = ({
                                   View
                                 </button>
                               )}
+
+                              <button
+                                onClick={() => handleDeleteSingleOrder(order.id, order.orderNumber)}
+                                className="p-1.5 rounded-lg bg-rose-50 hover:bg-rose-100 text-rose-600 border border-rose-200 transition-colors cursor-pointer"
+                                title="Delete Order"
+                              >
+                                <Trash2 className="w-3.5 h-3.5" />
+                              </button>
                             </div>
                           </td>
                         </tr>
-                      ))
+                        );
+                      })
                     )}
                   </tbody>
                 </table>
@@ -1422,30 +1735,39 @@ export const AdminPage: React.FC<AdminPageProps> = ({
                     )}
                   </div>
 
-                  <div className="flex items-center justify-end gap-3 pt-2">
+                  <div className="flex flex-wrap items-center justify-between gap-3 pt-2">
                     <button
-                      onClick={() => {
-                        const target = selectedOrder;
-                        setSelectedOrder(null);
-                        setManualSendOrder(target);
-                      }}
-                      className="px-4 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs transition-colors cursor-pointer shadow-xs flex items-center gap-1.5"
+                      onClick={() => handleDeleteSingleOrder(selectedOrder.id, selectedOrder.orderNumber)}
+                      className="px-3.5 py-2.5 rounded-xl bg-rose-50 hover:bg-rose-100 text-rose-700 border border-rose-200 font-bold text-xs transition-colors cursor-pointer flex items-center gap-1.5"
                     >
-                      <Send className="w-3.5 h-3.5" />
-                      <span>Dispatch Manual Report</span>
+                      <Trash2 className="w-3.5 h-3.5" />
+                      <span>Delete Order</span>
                     </button>
-                    <button
-                      onClick={() => handleResendReportEmail(selectedOrder)}
-                      className="px-3.5 py-2.5 rounded-xl bg-amber-400 hover:bg-amber-300 text-slate-950 font-bold text-xs transition-colors cursor-pointer shadow-xs"
-                    >
-                      Resend Email
-                    </button>
-                    <button
-                      onClick={() => setSelectedOrder(null)}
-                      className="px-4 py-2.5 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold text-xs transition-colors cursor-pointer"
-                    >
-                      Close
-                    </button>
+                    <div className="flex items-center gap-2">
+                      <button
+                        onClick={() => {
+                          const target = selectedOrder;
+                          setSelectedOrder(null);
+                          setManualSendOrder(target);
+                        }}
+                        className="px-4 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs transition-colors cursor-pointer shadow-xs flex items-center gap-1.5"
+                      >
+                        <Send className="w-3.5 h-3.5" />
+                        <span>Dispatch Manual Report</span>
+                      </button>
+                      <button
+                        onClick={() => handleResendReportEmail(selectedOrder)}
+                        className="px-3.5 py-2.5 rounded-xl bg-amber-400 hover:bg-amber-300 text-slate-950 font-bold text-xs transition-colors cursor-pointer shadow-xs"
+                      >
+                        Resend Email
+                      </button>
+                      <button
+                        onClick={() => setSelectedOrder(null)}
+                        className="px-4 py-2.5 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold text-xs transition-colors cursor-pointer"
+                      >
+                        Close
+                      </button>
+                    </div>
                   </div>
                 </div>
               </div>
@@ -1602,8 +1924,25 @@ export const AdminPage: React.FC<AdminPageProps> = ({
                 </p>
               </div>
 
-              {/* Status Filters */}
-              <div className="flex items-center gap-2">
+              {/* Status Filters & Select All */}
+              <div className="flex flex-wrap items-center gap-2">
+                <button
+                  type="button"
+                  onClick={handleSelectAllTickets}
+                  className="px-3.5 py-1.5 rounded-xl border border-slate-300 bg-slate-50 hover:bg-slate-100 text-slate-800 font-bold text-xs flex items-center gap-1.5 cursor-pointer transition-colors mr-1"
+                >
+                  {filteredTickets.length > 0 && filteredTickets.every((t) => selectedTicketIds.includes(t.id)) ? (
+                    <CheckSquare className="w-4 h-4 text-amber-600" />
+                  ) : (
+                    <Square className="w-4 h-4 text-slate-400" />
+                  )}
+                  <span>
+                    {filteredTickets.length > 0 && filteredTickets.every((t) => selectedTicketIds.includes(t.id))
+                      ? 'Deselect All'
+                      : `Select All (${filteredTickets.length})`}
+                  </span>
+                </button>
+
                 {(['all', 'open', 'in-progress', 'resolved'] as const).map((filter) => (
                   <button
                     key={filter}
@@ -1620,6 +1959,56 @@ export const AdminPage: React.FC<AdminPageProps> = ({
               </div>
             </div>
 
+            {/* Bulk Actions Bar for Support Tickets */}
+            {selectedTicketIds.length > 0 && (
+              <div className="bg-slate-900 text-white rounded-2xl p-4 shadow-lg flex flex-col sm:flex-row sm:items-center justify-between gap-4 animate-fadeIn border border-slate-800">
+                <div className="flex items-center gap-3">
+                  <span className="px-3 py-1 rounded-lg bg-amber-400 text-slate-950 font-black text-xs">
+                    {selectedTicketIds.length} TICKETS SELECTED
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => setSelectedTicketIds([])}
+                    className="text-xs text-slate-400 hover:text-white underline cursor-pointer"
+                  >
+                    Clear Selection
+                  </button>
+                </div>
+
+                <div className="flex flex-wrap items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => handleBulkUpdateTicketStatus('open')}
+                    className="px-3 py-1.5 rounded-xl bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 border border-amber-500/30 text-xs font-bold cursor-pointer transition-colors"
+                  >
+                    Mark Open
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => handleBulkUpdateTicketStatus('in-progress')}
+                    className="px-3 py-1.5 rounded-xl bg-blue-500/20 hover:bg-blue-500/30 text-blue-300 border border-blue-500/30 text-xs font-bold cursor-pointer transition-colors"
+                  >
+                    Mark In-Progress
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => handleBulkUpdateTicketStatus('resolved')}
+                    className="px-3 py-1.5 rounded-xl bg-emerald-500/20 hover:bg-emerald-500/30 text-emerald-300 border border-emerald-500/30 text-xs font-bold cursor-pointer transition-colors"
+                  >
+                    Mark Resolved
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleDeleteSelectedTickets}
+                    className="px-4 py-1.5 rounded-xl bg-rose-600 hover:bg-rose-500 text-white font-black text-xs uppercase tracking-wider flex items-center gap-1.5 cursor-pointer shadow-sm transition-colors ml-1"
+                  >
+                    <Trash2 className="w-3.5 h-3.5" />
+                    <span>Delete Selected ({selectedTicketIds.length})</span>
+                  </button>
+                </div>
+              </div>
+            )}
+
             {/* Tickets Grid */}
             <div className="grid grid-cols-1 gap-4">
               {filteredTickets.length === 0 ? (
@@ -1627,13 +2016,24 @@ export const AdminPage: React.FC<AdminPageProps> = ({
                   No support tickets found in this view.
                 </div>
               ) : (
-                filteredTickets.map((ticket) => (
+                filteredTickets.map((ticket) => {
+                  const isTicketSelected = selectedTicketIds.includes(ticket.id);
+                  return (
                   <div
                     key={ticket.id}
-                    className="bg-white border border-slate-200 rounded-2xl p-6 shadow-sm hover:shadow-md transition-shadow space-y-4"
+                    className={`bg-white border rounded-2xl p-6 shadow-sm hover:shadow-md transition-all space-y-4 ${
+                      isTicketSelected ? 'border-amber-400 ring-2 ring-amber-400/20 bg-amber-50/10' : 'border-slate-200'
+                    }`}
                   >
                     <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 pb-3 border-b border-slate-100">
                       <div className="flex items-center gap-3">
+                        <input
+                          type="checkbox"
+                          checked={isTicketSelected}
+                          onChange={() => handleToggleSelectTicket(ticket.id)}
+                          className="w-4 h-4 rounded border-slate-300 text-slate-900 focus:ring-slate-900 cursor-pointer"
+                          title="Select Ticket"
+                        />
                         <span className="font-mono font-bold text-xs text-slate-900 bg-slate-100 px-2.5 py-1 rounded-lg">
                           {ticket.ticketNumber}
                         </span>
@@ -1666,6 +2066,15 @@ export const AdminPage: React.FC<AdminPageProps> = ({
                         >
                           {ticket.status}
                         </span>
+
+                        <button
+                          type="button"
+                          onClick={() => handleDeleteSingleTicket(ticket.id, ticket.ticketNumber)}
+                          className="p-1.5 rounded-lg bg-rose-50 hover:bg-rose-100 text-rose-600 border border-rose-200 transition-colors cursor-pointer ml-1"
+                          title="Delete Ticket"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </button>
                       </div>
                     </div>
 
@@ -1786,7 +2195,8 @@ export const AdminPage: React.FC<AdminPageProps> = ({
                       </div>
                     )}
                   </div>
-                ))
+                  );
+                })
               )}
             </div>
           </div>
@@ -2079,6 +2489,65 @@ export const AdminPage: React.FC<AdminPageProps> = ({
                     </button>
                   </div>
                 </div>
+
+                {/* Per-Currency Price Overrides for Current Package */}
+                <div className="pt-6 border-t border-slate-200 space-y-4">
+                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                    <div>
+                      <h4 className="text-xs font-black uppercase tracking-wider text-slate-900 flex items-center gap-2">
+                        <Globe className="w-4 h-4 text-amber-500" />
+                        <span>Country Currency Prices for {currentEditingPkg.name}</span>
+                      </h4>
+                      <p className="text-[11px] text-slate-500 mt-0.5">
+                        Leave blank to auto-convert from Base USD (${currentEditingPkg.price.toFixed(2)}) using the currency exchange rate, or enter an exact custom price for any currency.
+                      </p>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => setActiveTab('currency')}
+                      className="text-xs font-bold text-amber-600 hover:text-amber-700 underline cursor-pointer shrink-0"
+                    >
+                      Manage Exchange Rates &amp; Country Rules &rarr;
+                    </button>
+                  </div>
+
+                  <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-3">
+                    {currencySettings.markets.map((market) => {
+                      const customVal = currentEditingPkg.currencyPrices?.[market.currencyCode];
+                      const autoCalc = (currentEditingPkg.price * market.exchangeRate).toFixed(
+                        market.exchangeRate >= 50 ? 0 : 2
+                      );
+                      return (
+                        <div
+                          key={market.countryCode}
+                          className="p-3 rounded-xl bg-slate-50 border border-slate-200 space-y-1.5"
+                        >
+                          <div className="flex items-center justify-between text-[11px] font-bold text-slate-700">
+                            <span>{market.flag} {market.currencyCode}</span>
+                            <span className="text-[10px] font-mono text-slate-400">{market.currencySymbol.trim()}</span>
+                          </div>
+                          <input
+                            type="number"
+                            step="0.01"
+                            value={customVal !== undefined ? customVal : ''}
+                            onChange={(e) =>
+                              handleUpdatePackageCustomCurrencyPrice(
+                                currentEditingPkg.id,
+                                market.currencyCode,
+                                e.target.value
+                              )
+                            }
+                            placeholder={`Auto: ${autoCalc}`}
+                            className="w-full bg-white border border-slate-300 focus:border-slate-900 rounded-lg px-2.5 py-1.5 text-xs font-mono font-bold text-slate-900 placeholder:text-slate-400 focus:outline-none"
+                          />
+                          <div className="text-[10px] text-slate-500 font-mono truncate">
+                            Site shows: <strong className="text-slate-800">{adminStore.formatPackagePrice(currentEditingPkg, market.currencyCode)}</strong>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
               </div>
             )}
 
@@ -2281,6 +2750,281 @@ export const AdminPage: React.FC<AdminPageProps> = ({
                 </div>
               </div>
             )}
+          </div>
+        )}
+
+        {/* =========================================================================
+            TAB 4B: CURRENCY & COUNTRY PRICING MANAGER
+            ========================================================================= */}
+        {activeTab === 'currency' && (
+          <div className="space-y-8 animate-fadeIn">
+            {/* Header Banner */}
+            <div className="bg-white border border-slate-200 rounded-2xl p-6 sm:p-7 shadow-sm flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+              <div className="space-y-1">
+                <div className="flex items-center gap-2">
+                  <Globe className="w-5 h-5 text-amber-500" />
+                  <h3 className="text-base font-bold text-slate-900">
+                    Global Currency &amp; Country Pricing Control
+                  </h3>
+                </div>
+                <p className="text-xs text-slate-500 max-w-2xl leading-relaxed">
+                  Automatically display package prices in the visitor&apos;s local currency based on their country, adjust exchange rates, or set custom fixed prices per currency for each report tier.
+                </p>
+              </div>
+
+              <div className="flex items-center gap-3 shrink-0">
+                <button
+                  type="button"
+                  onClick={handleResetCurrencyDefaults}
+                  className="px-4 py-2.5 rounded-xl border border-slate-200 hover:bg-slate-100 text-slate-600 font-bold text-xs transition-colors cursor-pointer"
+                >
+                  Reset Rates
+                </button>
+                <button
+                  type="button"
+                  onClick={handleSaveCurrencySettings}
+                  className="px-6 py-2.5 rounded-xl bg-slate-900 hover:bg-slate-800 text-white font-black text-xs uppercase tracking-wider flex items-center gap-2 cursor-pointer shadow-md transition-all"
+                >
+                  <Save className="w-4 h-4 text-amber-400" />
+                  <span>Save Currency Settings</span>
+                </button>
+              </div>
+            </div>
+
+            {/* Country Detection & Site Currency Behavior Card */}
+            <div className="bg-white border border-slate-200 rounded-2xl p-6 sm:p-7 shadow-sm space-y-6">
+              <h4 className="text-sm font-bold text-slate-900 pb-3 border-b border-slate-100">
+                1. Country Detection &amp; Default Market Rules
+              </h4>
+
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+                {/* Auto-Detect Toggle */}
+                <div className="p-4 rounded-2xl bg-slate-50 border border-slate-200 flex items-start justify-between gap-3">
+                  <div>
+                    <span className="text-xs font-bold text-slate-900 block">
+                      Auto-Detect Visitor Country &amp; Currency
+                    </span>
+                    <span className="text-[11px] text-slate-500 mt-1 block leading-relaxed">
+                      Automatically detects visitor&apos;s country via IP / browser timezone and shows pricing in their country&apos;s currency.
+                    </span>
+                  </div>
+                  <input
+                    type="checkbox"
+                    checked={currencySettings.mode === 'auto_country'}
+                    onChange={(e) => {
+                      const updated: CurrencySettings = {
+                        ...currencySettings,
+                        mode: e.target.checked ? 'auto_country' : 'forced_currency',
+                      };
+                      setCurrencySettings(updated);
+                      adminStore.saveCurrencySettings(updated);
+                    }}
+                    className="w-4 h-4 mt-1 rounded border-slate-300 text-slate-900 focus:ring-slate-900 cursor-pointer shrink-0"
+                  />
+                </div>
+
+                {/* Default Country Market */}
+                <div className="p-4 rounded-2xl bg-slate-50 border border-slate-200 space-y-2">
+                  <label className="text-xs font-bold text-slate-900 block">
+                    Default Country Market (Fallback)
+                  </label>
+                  <select
+                    value={currencySettings.defaultCountryCode}
+                    onChange={(e) => {
+                      const country = currencySettings.markets.find((c) => c.countryCode === e.target.value);
+                      const updated: CurrencySettings = {
+                        ...currencySettings,
+                        defaultCountryCode: e.target.value,
+                      };
+                      setCurrencySettings(updated);
+                      adminStore.saveCurrencySettings(updated);
+                      adminStore.setVisitorCountryCode(e.target.value);
+                      showNotification(`Default country set to ${country?.countryName} (${country?.currencyCode})`);
+                    }}
+                    className="w-full bg-white border border-slate-300 rounded-xl px-3 py-2 text-xs font-bold text-slate-900 focus:outline-none cursor-pointer"
+                  >
+                    {currencySettings.markets.map((c) => (
+                      <option key={c.countryCode} value={c.countryCode}>
+                        {c.flag} {c.countryName} ({c.currencyCode})
+                      </option>
+                    ))}
+                  </select>
+                  <p className="text-[10px] text-slate-500">
+                    Used when visitor country is unknown or as default region.
+                  </p>
+                </div>
+
+                {/* Force Global Currency Override */}
+                <div className="p-4 rounded-2xl bg-slate-50 border border-slate-200 space-y-2">
+                  <label className="text-xs font-bold text-slate-900 block">
+                    Force Single Currency Site-Wide (Optional)
+                  </label>
+                  <select
+                    value={currencySettings.mode === 'forced_currency' ? currencySettings.forcedCurrencyCode : ''}
+                    onChange={(e) => {
+                      const val = e.target.value as SupportedCurrencyCode | '';
+                      const updated: CurrencySettings = {
+                        ...currencySettings,
+                        mode: val ? 'forced_currency' : 'auto_country',
+                        forcedCurrencyCode: val ? val : 'USD',
+                      };
+                      setCurrencySettings(updated);
+                      adminStore.saveCurrencySettings(updated);
+                      showNotification(
+                        val
+                          ? `All visitors will now see pricing in ${val}`
+                          : 'Dynamic country-based currency display enabled'
+                      );
+                    }}
+                    className="w-full bg-white border border-slate-300 rounded-xl px-3 py-2 text-xs font-bold text-slate-900 focus:outline-none cursor-pointer"
+                  >
+                    <option value="">Dynamic (Show Currency Based on Visitor Country)</option>
+                    {currencySettings.markets.map((market) => (
+                      <option key={market.countryCode} value={market.currencyCode}>
+                        Lock Site to {market.flag} {market.currencyCode} ({market.currencySymbol.trim()}) - {market.currencyName}
+                      </option>
+                    ))}
+                  </select>
+                  <p className="text-[10px] text-slate-500">
+                    Keep on &quot;Dynamic&quot; to show local currency per country, or lock to one currency.
+                  </p>
+                </div>
+              </div>
+            </div>
+
+            {/* Exchange Rates & Per-Currency Package Pricing Matrix */}
+            <div className="bg-white border border-slate-200 rounded-2xl p-6 sm:p-7 shadow-sm space-y-6">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 pb-3 border-b border-slate-100">
+                <div>
+                  <h4 className="text-sm font-bold text-slate-900">
+                    2. Currency Exchange Rates &amp; Package Price Matrix
+                  </h4>
+                  <p className="text-xs text-slate-500 mt-0.5">
+                    Adjust the exchange rate (vs $1.00 USD) or enter custom package prices for any country&apos;s currency. Changes update the live site immediately.
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={handleSaveCurrencySettings}
+                  className="px-4 py-2 rounded-xl bg-amber-400 hover:bg-amber-300 text-slate-950 font-black text-xs uppercase tracking-wider cursor-pointer shadow-xs shrink-0"
+                >
+                  Save All Rate Changes
+                </button>
+              </div>
+
+              <div className="overflow-x-auto">
+                <table className="w-full text-left border-collapse text-xs">
+                  <thead>
+                    <tr className="bg-slate-50 border-b border-slate-200 text-[11px] font-bold uppercase tracking-wider text-slate-600">
+                      <th className="py-3 px-4">Country / Currency</th>
+                      <th className="py-3 px-3">Symbol</th>
+                      <th className="py-3 px-3">Rate (per $1 USD)</th>
+                      {packages.map((pkg) => (
+                        <th key={pkg.id} className="py-3 px-3">
+                          <div>{pkg.name}</div>
+                          <div className="text-[10px] font-mono text-slate-400">
+                            Base: ${pkg.price.toFixed(2)}
+                          </div>
+                        </th>
+                      ))}
+                      <th className="py-3 px-3 text-right">Test Active</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100">
+                    {currencySettings.markets.map((market) => {
+                      return (
+                        <tr key={market.countryCode} className="hover:bg-slate-50/80 transition-colors">
+                          <td className="py-3.5 px-4 font-bold text-slate-900 whitespace-nowrap">
+                            <div className="flex items-center gap-2">
+                              <span className="text-base">{market.flag}</span>
+                              <div>
+                                <div>{market.countryName} ({market.currencyCode})</div>
+                                <div className="text-[10px] text-slate-400 font-normal">
+                                  {market.currencyName}
+                                </div>
+                              </div>
+                            </div>
+                          </td>
+
+                          {/* Editable Symbol */}
+                          <td className="py-3.5 px-3">
+                            <input
+                              type="text"
+                              value={market.currencySymbol}
+                              onChange={(e) => handleUpdateCurrencySymbol(market.currencyCode, e.target.value)}
+                              className="w-16 bg-slate-50 border border-slate-300 focus:bg-white focus:border-slate-900 rounded-lg px-2 py-1.5 text-xs font-mono font-bold text-slate-900 focus:outline-none"
+                            />
+                          </td>
+
+                          {/* Editable Exchange Rate */}
+                          <td className="py-3.5 px-3">
+                            <input
+                              type="number"
+                              step="0.01"
+                              min="0.0001"
+                              disabled={market.currencyCode === 'USD'}
+                              value={market.exchangeRate}
+                              onChange={(e) =>
+                                handleUpdateCurrencyRate(market.currencyCode, parseFloat(e.target.value) || 1)
+                              }
+                              className="w-24 bg-slate-50 border border-slate-300 focus:bg-white focus:border-slate-900 disabled:opacity-60 rounded-lg px-2.5 py-1.5 text-xs font-mono font-bold text-slate-900 focus:outline-none"
+                            />
+                          </td>
+
+                          {/* Per-Package Price Override or Auto-Calculated Preview */}
+                          {packages.map((pkg) => {
+                            const customPrice = pkg.currencyPrices?.[market.currencyCode];
+                            const autoCalc = (pkg.price * market.exchangeRate).toFixed(
+                              market.exchangeRate >= 50 ? 0 : 2
+                            );
+                            return (
+                              <td key={pkg.id} className="py-3.5 px-3">
+                                <div className="space-y-1">
+                                  <input
+                                    type="number"
+                                    step="0.01"
+                                    value={customPrice !== undefined ? customPrice : ''}
+                                    onChange={(e) =>
+                                      handleUpdatePackageCustomCurrencyPrice(
+                                        pkg.id,
+                                        market.currencyCode,
+                                        e.target.value
+                                      )
+                                    }
+                                    placeholder={`Auto: ${autoCalc}`}
+                                    className="w-28 bg-white border border-slate-300 focus:border-slate-900 rounded-lg px-2.5 py-1.5 text-xs font-mono font-bold text-slate-900 placeholder:text-slate-400 focus:outline-none"
+                                  />
+                                  <div className="text-[10px] font-mono text-emerald-700 font-bold">
+                                    Live: {adminStore.formatPackagePrice(pkg, market.currencyCode)}
+                                  </div>
+                                </div>
+                              </td>
+                            );
+                          })}
+
+                          {/* Quick Set Active Country Button */}
+                          <td className="py-3.5 px-3 text-right whitespace-nowrap">
+                            <button
+                              type="button"
+                              onClick={() => {
+                                adminStore.saveCurrencySettings(currencySettings);
+                                adminStore.setVisitorCountryCode(market.countryCode);
+                                showNotification(
+                                  `Active site country switched to ${market.flag} ${market.countryName} (${market.currencyCode})`
+                                );
+                              }}
+                              className="px-3 py-1.5 rounded-lg bg-slate-100 hover:bg-slate-900 hover:text-white text-slate-700 font-bold text-[11px] transition-colors cursor-pointer"
+                            >
+                              Activate {market.currencyCode}
+                            </button>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            </div>
           </div>
         )}
 

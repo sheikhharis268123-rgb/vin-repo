@@ -19,17 +19,13 @@ import {
   Info,
   ChevronDown,
   ChevronUp,
-  CreditCard,
   Shield,
-  FileCheck2,
   Clock,
-  ArrowRight,
-  Download
+  Globe,
 } from 'lucide-react';
 import { FullVehicleReport, ReportPlanId } from '../types';
 import { PLANS } from '../data/sampleVehicles';
-import { adminStore, EditablePackage } from '../services/adminStore';
-import { generateVehicleReportPdf } from '../services/pdfReportGenerator';
+import { adminStore, EditablePackage, CountryMarketConfig } from '../services/adminStore';
 
 interface ReportDashboardProps {
   report: FullVehicleReport;
@@ -42,9 +38,7 @@ interface ReportDashboardProps {
 export const ReportDashboard: React.FC<ReportDashboardProps> = ({
   report,
   isUnlocked,
-  unlockedPlan,
   onSelectPlan,
-  onViewFullReport,
 }) => {
   const [copiedVin, setCopiedVin] = useState(false);
   const [showSummaryDrawer, setShowSummaryDrawer] = useState(true);
@@ -56,6 +50,7 @@ export const ReportDashboard: React.FC<ReportDashboardProps> = ({
       return PLANS as any;
     }
   });
+  const [activeMarket, setActiveMarket] = useState<CountryMarketConfig>(() => adminStore.getActiveMarket());
 
   useEffect(() => {
     const syncPackages = () => {
@@ -63,11 +58,14 @@ export const ReportDashboard: React.FC<ReportDashboardProps> = ({
       if (storePkgs && storePkgs.length > 0) {
         setPackages(storePkgs);
       }
+      setActiveMarket(adminStore.getActiveMarket());
     };
     syncPackages();
     window.addEventListener('wc_packages_updated', syncPackages);
+    window.addEventListener('wc_currency_updated', syncPackages);
     return () => {
       window.removeEventListener('wc_packages_updated', syncPackages);
+      window.removeEventListener('wc_currency_updated', syncPackages);
     };
   }, []);
 
@@ -114,7 +112,7 @@ export const ReportDashboard: React.FC<ReportDashboardProps> = ({
   return (
     <div className="w-full bg-[#f8f9fb] py-8 lg:py-12 px-4 sm:px-6 lg:px-8 text-slate-800">
       <div className="max-w-7xl mx-auto space-y-6">
-        {/* Top Header Card matching Screenshot 2 */}
+        {/* Top Header Card */}
         <div className="bg-[#ededf0] rounded-2xl p-5 sm:p-7 border border-slate-300/60 shadow-sm flex flex-col lg:flex-row lg:items-center justify-between gap-6">
           {/* Left: VIN IDENTIFIED badge + Title + Manufacturer */}
           <div>
@@ -233,49 +231,7 @@ export const ReportDashboard: React.FC<ReportDashboardProps> = ({
           )}
         </div>
 
-        {/* Unlocked banner if user already paid */}
-        {isUnlocked && (
-          <div className="bg-gradient-to-r from-emerald-500/10 via-emerald-500/5 to-transparent border border-emerald-500/30 rounded-xl p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
-            <div className="flex items-center gap-3">
-              <div className="w-10 h-10 rounded-full bg-emerald-500 text-white flex items-center justify-center font-bold shrink-0">
-                <Check className="w-5 h-5" />
-              </div>
-              <div>
-                <h2 className="text-sm sm:text-base font-bold text-slate-900 flex items-center gap-2">
-                  Full Vehicle History Unlocked Successfully
-                  <span className="bg-emerald-100 text-emerald-800 text-[10px] font-extrabold px-2 py-0.5 rounded uppercase">
-                    Paid via {unlockedPlan?.toUpperCase() || 'STANDARD'}
-                  </span>
-                </h2>
-                <p className="text-xs text-slate-600">
-                  All 12 NMVTIS status indicators, police accident logs, odometer history, and lien checks are now visible.
-                </p>
-              </div>
-            </div>
-            <div className="flex flex-wrap items-center gap-2.5 shrink-0">
-              <button
-                type="button"
-                onClick={() => generateVehicleReportPdf(report)}
-                className="px-4 py-2.5 rounded-lg bg-yellow-400 hover:bg-yellow-300 text-black font-extrabold text-xs uppercase tracking-wider transition-colors flex items-center gap-1.5 shadow-sm cursor-pointer"
-              >
-                <Download className="w-4 h-4" />
-                <span>Download Official PDF</span>
-              </button>
-              {onViewFullReport && (
-                <button
-                  type="button"
-                  onClick={onViewFullReport}
-                  className="px-4 py-2.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs uppercase tracking-wider transition-colors flex items-center gap-1.5 shadow-sm cursor-pointer"
-                >
-                  <span>View Details</span>
-                  <ArrowRight className="w-4 h-4" />
-                </button>
-              )}
-            </div>
-          </div>
-        )}
-
-        {/* Main Two-Column Layout matching Screenshot 2 */}
+        {/* Main Two-Column Layout */}
         <div className="grid grid-cols-1 lg:grid-cols-12 gap-8 items-start">
           {/* LEFT COLUMN: History Records & Real-Time Status Indicators (7 Cols) */}
           <div className="lg:col-span-7 space-y-6">
@@ -289,11 +245,11 @@ export const ReportDashboard: React.FC<ReportDashboardProps> = ({
               <p className="text-xs sm:text-sm text-slate-500 mt-1 font-medium">
                 {isUnlocked
                   ? 'All records have been unblinded and verified against state DMV registries.'
-                  : 'Select a package on the right to unlock the full report.'}
+                  : 'Select a package on the right to order the full report.'}
               </p>
             </div>
 
-            {/* Sub-header divider matching Screenshot 2: REAL-TIME STATUS INDICATORS */}
+            {/* Sub-header divider: REAL-TIME STATUS INDICATORS */}
             <div className="flex items-center gap-2 pt-2">
               <span className="w-6 h-0.5 bg-yellow-400"></span>
               <span className="text-[11px] font-bold text-slate-400 uppercase tracking-wider">
@@ -301,7 +257,7 @@ export const ReportDashboard: React.FC<ReportDashboardProps> = ({
               </span>
             </div>
 
-            {/* 12 Status Cards Grid matching Screenshot 2 (3 columns x 4 rows) */}
+            {/* 12 Status Cards Grid (3 columns x 4 rows) */}
             <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
               {report.indicators.map((ind) => {
                 const isCurrentlyLocked = !isUnlocked && ind.isLocked;
@@ -315,7 +271,7 @@ export const ReportDashboard: React.FC<ReportDashboardProps> = ({
                         : 'border-emerald-200/60 bg-emerald-50/20'
                     }`}
                   >
-                    {/* Dark icon box matching Screenshot 2 */}
+                    {/* Dark icon box */}
                     <div className="w-10 h-10 rounded-lg bg-black flex items-center justify-center shrink-0 shadow-sm">
                       {getIndicatorIcon(ind.icon)}
                     </div>
@@ -329,14 +285,12 @@ export const ReportDashboard: React.FC<ReportDashboardProps> = ({
                       {/* Status row */}
                       {isCurrentlyLocked ? (
                         <div className="mt-1 flex items-center gap-1.5">
-                          {/* Pixelated/blurred redacted bar */}
                           <div className="flex gap-0.5 select-none opacity-40">
                             <span className="w-1.5 h-3 bg-slate-400 rounded-xs"></span>
                             <span className="w-2.5 h-3 bg-slate-500 rounded-xs"></span>
                             <span className="w-1.5 h-3 bg-slate-400 rounded-xs"></span>
                             <span className="w-2 h-3 bg-slate-600 rounded-xs"></span>
                           </div>
-                          {/* Yellow LOCKED pill badge matching Screenshot 2 */}
                           <span className="inline-flex items-center gap-1 bg-yellow-100 text-yellow-700 text-[10px] font-extrabold px-1.5 py-0.5 rounded uppercase tracking-wider">
                             <Lock className="w-2.5 h-2.5" />
                             LOCKED
@@ -368,7 +322,7 @@ export const ReportDashboard: React.FC<ReportDashboardProps> = ({
               })}
             </div>
 
-            {/* BODY card matching Screenshot 2 */}
+            {/* BODY card */}
             <div className="pt-2">
               <div className="inline-block bg-white rounded-xl p-3.5 border border-slate-200/90 shadow-xs min-w-[160px]">
                 <div className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">
@@ -381,29 +335,31 @@ export const ReportDashboard: React.FC<ReportDashboardProps> = ({
             </div>
           </div>
 
-          {/* RIGHT COLUMN: Order an Instant Vehicle History Report (5 Cols) */}
+          {/* RIGHT COLUMN: Order a Vehicle History Report (5 Cols) */}
           <div className="lg:col-span-5 space-y-5">
             <div>
-              <div className="flex items-center justify-between">
+              <div className="flex items-center justify-between flex-wrap gap-2">
                 <div className="text-xs font-black text-slate-900 uppercase tracking-widest">
                   CHOOSE A PACKAGE
                 </div>
-                <span className="text-[10px] font-black text-slate-600 bg-slate-200/80 px-2 py-0.5 rounded-full uppercase tracking-wider">
-                  {displayPackages.length} Available Tiers
+                <span className="text-[10px] font-black text-slate-700 bg-slate-200/90 px-2.5 py-0.5 rounded-full uppercase tracking-wider inline-flex items-center gap-1">
+                  <Globe className="w-3 h-3 text-slate-600" />
+                  <span>{activeMarket.flag} {activeMarket.currencyCode} Pricing</span>
                 </span>
               </div>
               <h2 className="mt-1 text-2xl sm:text-3xl font-black text-slate-950 uppercase tracking-tight">
-                ORDER AN INSTANT VEHICLE HISTORY REPORT
+                ORDER AN OFFICIAL VEHICLE HISTORY REPORT
               </h2>
               <p className="text-xs text-slate-500 mt-1 font-medium">
-                Select your preferred coverage level below. Instant verification dispatched immediately.
+                Select your preferred coverage level below. Official certified report delivered according to your package's delivery window.
               </p>
             </div>
 
-            {/* Dynamic Packages List (showing all added & edited packages) */}
+            {/* Dynamic Packages List (showing all added & edited packages in active country currency) */}
             <div className="space-y-5">
               {displayPackages.map((pkg) => {
                 const isPopular = pkg.isPopular;
+                const priceInfo = adminStore.getPackagePriceInfo(pkg);
 
                 if (isPopular) {
                   return (
@@ -437,7 +393,10 @@ export const ReportDashboard: React.FC<ReportDashboardProps> = ({
                           </div>
                           <div className="text-right shrink-0">
                             <div className="text-2xl sm:text-3xl font-black text-white">
-                              ${pkg.price.toFixed(2)}
+                              {priceInfo.formatted}
+                            </div>
+                            <div className="text-[10px] font-mono font-bold text-yellow-400">
+                              {priceInfo.currencyCode}
                             </div>
                             <div className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">
                               / {pkg.credits || 1} HISTORY CREDIT
@@ -494,7 +453,10 @@ export const ReportDashboard: React.FC<ReportDashboardProps> = ({
                       </div>
                       <div className="text-right shrink-0">
                         <div className="text-2xl sm:text-3xl font-black text-slate-950">
-                          ${pkg.price.toFixed(2)}
+                          {priceInfo.formatted}
+                        </div>
+                        <div className="text-[10px] font-mono font-bold text-slate-500">
+                          {priceInfo.currencyCode}
                         </div>
                         <div className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">
                           / {pkg.credits || 1} HISTORY CREDIT

@@ -1,6 +1,7 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { VinWheelerLogo } from './VinWheelerLogo';
-import { ShieldCheck, ChevronDown, ChevronUp, Check, Menu, X, ArrowRight } from 'lucide-react';
+import { ShieldCheck, ChevronDown, ChevronUp, Menu, X, Check } from 'lucide-react';
+import { adminStore, CountryMarketConfig } from '../services/adminStore';
 
 interface NavbarProps {
   onNavigate: (page: string) => void;
@@ -9,26 +10,57 @@ interface NavbarProps {
   savedReportsCount?: number;
 }
 
-const COUNTRIES = [
-  { code: 'US', name: 'UNITED STATES', flag: '🇺🇸' },
-  { code: 'UK', name: 'UNITED KINGDOM', flag: '🇬🇧' },
-  { code: 'CA', name: 'CANADA', flag: '🇨🇦' },
-  { code: 'AU', name: 'AUSTRALIA', flag: '🇦🇺' },
-];
-
 export const Navbar: React.FC<NavbarProps> = ({
   onNavigate,
   activePage,
   onGetStarted,
-  savedReportsCount = 0,
 }) => {
-  const [selectedCountry, setSelectedCountry] = useState(COUNTRIES[0]);
+  const [markets, setMarkets] = useState<CountryMarketConfig[]>(() => adminStore.getCurrencySettings().markets);
+  const [selectedCountry, setSelectedCountry] = useState<CountryMarketConfig>(() => adminStore.getActiveMarket());
+  const [currencyMode, setCurrencyMode] = useState<'auto_country' | 'forced_currency'>(
+    () => adminStore.getCurrencySettings().mode
+  );
   const [isCountryOpen, setIsCountryOpen] = useState(false);
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
 
+  useEffect(() => {
+    // Auto-detect visitor country by Geo-IP on first visit if in auto mode
+    adminStore.detectVisitorCountryByGeo().then((detected) => {
+      setSelectedCountry(detected);
+    });
+
+    const syncCurrency = () => {
+      const settings = adminStore.getCurrencySettings();
+      setMarkets(settings.markets);
+      setCurrencyMode(settings.mode);
+      setSelectedCountry(adminStore.getActiveMarket());
+    };
+
+    window.addEventListener('wc_currency_updated', syncCurrency);
+    window.addEventListener('wc_packages_updated', syncCurrency);
+    return () => {
+      window.removeEventListener('wc_currency_updated', syncCurrency);
+      window.removeEventListener('wc_packages_updated', syncCurrency);
+    };
+  }, []);
+
+  const handleSelectMarket = (market: CountryMarketConfig) => {
+    if (currencyMode === 'forced_currency') {
+      // If admin had forced a currency, switching in navbar switches the visitor country & sets mode to auto_country so visitor can see their country's pricing
+      const currentSettings = adminStore.getCurrencySettings();
+      adminStore.saveCurrencySettings({
+        ...currentSettings,
+        mode: 'auto_country',
+      });
+    }
+    adminStore.setVisitorCountryCode(market.countryCode);
+    setSelectedCountry(market);
+    setIsCountryOpen(false);
+  };
+
   return (
     <header className="relative w-full z-40 bg-black/40 backdrop-blur-md border-b border-white/5">
-      {/* Top micro bar: NETWORK LIVE | OFFICIAL DATA NODE (hidden on mobile) */}
+      {/* Top micro bar: NETWORK LIVE | OFFICIAL DATA NODE */}
       <div className="w-full px-4 sm:px-8 py-1.5 flex items-center justify-end sm:justify-between text-[11px] font-mono tracking-wider text-slate-300/80 border-b border-white/5">
         <div className="hidden sm:flex items-center gap-2">
           <span className="flex items-center gap-1.5 text-emerald-400 font-semibold">
@@ -41,11 +73,11 @@ export const Navbar: React.FC<NavbarProps> = ({
           <span className="text-white/20">|</span>
           <span className="flex items-center gap-1 text-slate-300">
             <ShieldCheck className="w-3.5 h-3.5 text-yellow-400" />
-            OFFICIAL DATA NODE: {selectedCountry.code}
+            OFFICIAL DATA NODE: {selectedCountry.countryCode} • {selectedCountry.currencyCode} ({selectedCountry.currencySymbol.trim()})
           </span>
         </div>
 
-        {/* Country selector matching screenshot 2 */}
+        {/* Country & Currency Selector */}
         <div className="relative">
           <button
             onClick={() => setIsCountryOpen(!isCountryOpen)}
@@ -53,7 +85,10 @@ export const Navbar: React.FC<NavbarProps> = ({
           >
             <span className="text-sm">{selectedCountry.flag}</span>
             <span className="font-black tracking-wider text-[11px] sm:text-xs text-white uppercase">
-              {selectedCountry.name}
+              {selectedCountry.countryName}
+            </span>
+            <span className="px-1.5 py-0.2 rounded bg-yellow-400/20 text-yellow-400 font-mono font-bold text-[10px] border border-yellow-400/30">
+              {selectedCountry.currencyCode}
             </span>
             {isCountryOpen ? (
               <ChevronUp className="w-3.5 h-3.5 text-yellow-400 stroke-[3]" />
@@ -63,29 +98,39 @@ export const Navbar: React.FC<NavbarProps> = ({
           </button>
 
           {isCountryOpen && (
-            <div className="absolute right-0 mt-2 w-60 sm:w-64 bg-[#14161b] border border-white/10 rounded-2xl shadow-2xl p-3.5 sm:p-4 z-50 animate-fadeIn">
-              <div className="text-[10px] font-black tracking-widest text-slate-500 uppercase px-1 pb-2">
-                SELECT MARKET
+            <div className="absolute right-0 mt-2 w-72 sm:w-80 bg-[#14161b] border border-white/10 rounded-2xl shadow-2xl p-3.5 sm:p-4 z-50 animate-fadeIn max-h-[80vh] overflow-y-auto">
+              <div className="flex items-center justify-between px-1 pb-2">
+                <span className="text-[10px] font-black tracking-widest text-slate-400 uppercase">
+                  SELECT COUNTRY &amp; CURRENCY
+                </span>
+                <span className="text-[10px] font-mono text-yellow-400 font-bold">
+                  {selectedCountry.currencyCode} ({selectedCountry.currencySymbol.trim()})
+                </span>
               </div>
               <div className="h-[1px] bg-white/10 mb-2.5" />
               <div className="space-y-1.5">
-                {COUNTRIES.map((country) => {
-                  const isSelected = selectedCountry.code === country.code;
+                {markets.map((market) => {
+                  const isSelected = selectedCountry.countryCode === market.countryCode;
                   return (
                     <button
-                      key={country.code}
-                      onClick={() => {
-                        setSelectedCountry(country);
-                        setIsCountryOpen(false);
-                      }}
-                      className={`w-full p-2.5 sm:p-3 rounded-xl text-left text-xs font-black tracking-wider uppercase transition-all flex items-center gap-3 cursor-pointer ${
+                      key={market.countryCode}
+                      onClick={() => handleSelectMarket(market)}
+                      className={`w-full p-2.5 rounded-xl text-left text-xs font-black tracking-wider uppercase transition-all flex items-center justify-between gap-2 cursor-pointer ${
                         isSelected
                           ? 'border border-yellow-500/70 bg-[#1e2017] text-yellow-400 shadow-sm'
                           : 'text-slate-300 hover:text-white hover:bg-white/5 border border-transparent'
                       }`}
                     >
-                      <span className="text-base">{country.flag}</span>
-                      <span>{country.name}</span>
+                      <div className="flex items-center gap-2.5 truncate">
+                        <span className="text-base">{market.flag}</span>
+                        <span className="truncate">{market.countryName}</span>
+                      </div>
+                      <div className="flex items-center gap-1.5 shrink-0">
+                        <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-white/10 text-slate-200">
+                          {market.currencyCode} ({market.currencySymbol.trim()})
+                        </span>
+                        {isSelected && <Check className="w-3.5 h-3.5 text-yellow-400" />}
+                      </div>
                     </button>
                   );
                 })}
@@ -136,7 +181,7 @@ export const Navbar: React.FC<NavbarProps> = ({
           </button>
         </nav>
 
-        {/* Primary Action Button matching image.png: GET STARTED */}
+        {/* Primary Action Button: GET STARTED */}
         <div className="hidden lg:flex items-center gap-3">
           <button
             onClick={onGetStarted}

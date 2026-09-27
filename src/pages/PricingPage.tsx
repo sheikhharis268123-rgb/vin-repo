@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
-import { Check, ShieldCheck, Star, Sparkles } from 'lucide-react';
+import { Check, ShieldCheck, Star, Sparkles, Globe } from 'lucide-react';
 import { ReportPlanId } from '../types';
-import { adminStore, EditablePackage } from '../services/adminStore';
+import { adminStore, EditablePackage, CountryMarketConfig } from '../services/adminStore';
 import pricingHeroImg from '../assets/images/pricing_hero_car_garage_1790203751610.jpg';
 
 interface PricingPageProps {
@@ -11,12 +11,34 @@ interface PricingPageProps {
 
 export const PricingPage: React.FC<PricingPageProps> = ({ onSelectPlan }) => {
   const [packages, setPackages] = useState<EditablePackage[]>(() => adminStore.getPackages());
+  const [activeMarket, setActiveMarket] = useState<CountryMarketConfig>(() => adminStore.getActiveMarket());
+  const [allMarkets, setAllMarkets] = useState<CountryMarketConfig[]>(() => adminStore.getCurrencySettings().markets);
 
   useEffect(() => {
-    const sync = () => setPackages(adminStore.getPackages());
+    const sync = () => {
+      setPackages(adminStore.getPackages());
+      setActiveMarket(adminStore.getActiveMarket());
+      setAllMarkets(adminStore.getCurrencySettings().markets);
+    };
     window.addEventListener('wc_packages_updated', sync);
-    return () => window.removeEventListener('wc_packages_updated', sync);
+    window.addEventListener('wc_currency_updated', sync);
+    return () => {
+      window.removeEventListener('wc_packages_updated', sync);
+      window.removeEventListener('wc_currency_updated', sync);
+    };
   }, []);
+
+  const handleSelectCountry = (countryCode: string) => {
+    const currentSettings = adminStore.getCurrencySettings();
+    if (currentSettings.mode === 'forced_currency') {
+      adminStore.saveCurrencySettings({
+        ...currentSettings,
+        mode: 'auto_country',
+      });
+    }
+    adminStore.setVisitorCountryCode(countryCode);
+    setActiveMarket(adminStore.getActiveMarket());
+  };
 
   const activePackages = packages.filter((p) => p.isActive !== false);
   const displayPackages = activePackages.length > 0 ? activePackages : packages;
@@ -24,9 +46,7 @@ export const PricingPage: React.FC<PricingPageProps> = ({ onSelectPlan }) => {
   return (
     <div className="w-full min-h-screen bg-[#f3f5f8] text-slate-900 font-sans animate-fadeIn">
       {/* =========================================================================
-          HERO SECTION (MATCHING USER SCREENSHOT 1)
-          Dark automotive workshop background with open-hood silver sedan,
-          bold italic typography: "FEDERAL RECORD AUDIT PACKAGES."
+          HERO SECTION
           ========================================================================= */}
       <section className="relative w-full overflow-hidden bg-[#0d1017] text-white pt-20 pb-28 sm:pt-28 sm:pb-36 px-4 text-center">
         {/* Background Image with Dark Vignette Overlay */}
@@ -36,19 +56,40 @@ export const PricingPage: React.FC<PricingPageProps> = ({ onSelectPlan }) => {
         ></div>
         <div className="absolute inset-0 bg-gradient-to-b from-black/85 via-black/75 to-[#0d1017]"></div>
 
-        <div className="relative z-10 max-w-4xl mx-auto space-y-4">
+        <div className="relative z-10 max-w-4xl mx-auto space-y-5">
+          {/* Active Country & Currency Switcher Pill */}
+          <div className="inline-flex flex-wrap items-center justify-center gap-2 px-4 py-1.5 rounded-full bg-white/10 backdrop-blur-md border border-white/15 text-xs font-bold text-slate-200">
+            <Globe className="w-3.5 h-3.5 text-yellow-400" />
+            <span>Showing Regional Pricing for:</span>
+            <select
+              value={activeMarket.countryCode}
+              onChange={(e) => handleSelectCountry(e.target.value)}
+              className="bg-black/60 text-yellow-400 font-black uppercase px-2.5 py-1 rounded-full border border-yellow-400/40 text-xs focus:outline-none cursor-pointer"
+            >
+              {allMarkets.map((m) => (
+                <option key={m.countryCode} value={m.countryCode} className="bg-slate-900 text-white">
+                  {m.flag} {m.countryName} ({m.currencyCode} {m.currencySymbol.trim()})
+                </option>
+              ))}
+            </select>
+          </div>
+
           <h1 className="text-4xl sm:text-6xl md:text-7xl font-black italic tracking-tighter uppercase text-white leading-none drop-shadow-md">
             FEDERAL RECORD <br className="hidden sm:inline" />
             <span className="text-yellow-400">AUDIT</span> PACKAGES.
           </h1>
           <p className="text-slate-300 font-medium text-sm sm:text-base md:text-lg max-w-xl mx-auto leading-relaxed">
-            Elite vehicle history data sourced directly from federal and insurance databases. No compromises.
+            Elite vehicle history data sourced directly from federal and insurance databases. All prices displayed in{' '}
+            <span className="text-yellow-400 font-bold">
+              {activeMarket.currencyName} ({activeMarket.currencyCode})
+            </span>
+            .
           </p>
         </div>
       </section>
 
       {/* =========================================================================
-          PRICING CARDS SECTION (ALL DYNAMIC PACKAGES)
+          PRICING CARDS SECTION (ALL DYNAMIC PACKAGES IN LOCAL CURRENCY)
           ========================================================================= */}
       <section className="relative z-20 max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 -mt-16 sm:-mt-20 pb-24">
         <div
@@ -64,6 +105,7 @@ export const PricingPage: React.FC<PricingPageProps> = ({ onSelectPlan }) => {
         >
           {displayPackages.map((pkg) => {
             const isPopular = pkg.isPopular;
+            const priceInfo = adminStore.getPackagePriceInfo(pkg);
 
             if (isPopular) {
               return (
@@ -92,18 +134,21 @@ export const PricingPage: React.FC<PricingPageProps> = ({ onSelectPlan }) => {
                       </p>
                     </div>
 
-                    {/* Price */}
-                    <div className="mt-7 flex items-baseline">
-                      <span className="text-4xl sm:text-5xl font-black text-white tracking-tight font-sans">
-                        ${pkg.price.toFixed(2)}
+                    {/* Price in Local Currency */}
+                    <div className="mt-7 flex items-baseline flex-wrap gap-1">
+                      <span className="text-3xl sm:text-4xl font-black text-white tracking-tight font-sans">
+                        {priceInfo.formatted}
                       </span>
-                      <span className="text-[11px] font-black text-yellow-400/80 tracking-wider uppercase ml-2">
+                      <span className="text-[10px] font-mono font-bold text-yellow-400 bg-yellow-400/10 px-1.5 py-0.5 rounded border border-yellow-400/30">
+                        {priceInfo.currencyCode}
+                      </span>
+                      <span className="text-[11px] font-black text-yellow-400/80 tracking-wider uppercase w-full mt-1">
                         / {pkg.credits || 1} HISTORY CREDIT
                       </span>
                     </div>
 
                     {/* Delivery Window */}
-                    <div className="mt-8 pt-4 border-t border-white/10">
+                    <div className="mt-6 pt-4 border-t border-white/10">
                       <div className="text-[10px] font-black tracking-widest text-slate-400 uppercase">
                         DELIVERY WINDOW
                       </div>
@@ -157,18 +202,21 @@ export const PricingPage: React.FC<PricingPageProps> = ({ onSelectPlan }) => {
                     "{pkg.tagline}"
                   </p>
 
-                  {/* Price */}
-                  <div className="mt-7 flex items-baseline">
-                    <span className="text-4xl sm:text-5xl font-black text-slate-900 tracking-tight font-sans">
-                      ${pkg.price.toFixed(2)}
+                  {/* Price in Local Currency */}
+                  <div className="mt-7 flex items-baseline flex-wrap gap-1">
+                    <span className="text-3xl sm:text-4xl font-black text-slate-900 tracking-tight font-sans">
+                      {priceInfo.formatted}
                     </span>
-                    <span className="text-[11px] font-black text-slate-400 tracking-wider uppercase ml-2">
+                    <span className="text-[10px] font-mono font-bold text-slate-600 bg-slate-100 px-1.5 py-0.5 rounded border border-slate-200">
+                      {priceInfo.currencyCode}
+                    </span>
+                    <span className="text-[11px] font-black text-slate-400 tracking-wider uppercase w-full mt-1">
                       / {pkg.credits || 1} HISTORY CREDIT
                     </span>
                   </div>
 
                   {/* Delivery Window */}
-                  <div className="mt-8 pt-4 border-t border-slate-100">
+                  <div className="mt-6 pt-4 border-t border-slate-100">
                     <div className="text-[10px] font-black tracking-widest text-slate-400 uppercase">
                       DELIVERY WINDOW
                     </div>

@@ -1,7 +1,122 @@
 import { ReportPlanId } from '../types';
+import { verifyStripeCredentials, verifyPaypalCredentials } from './paymentCheckService';
 
 export type OrderPaymentStatus = 'Paid' | 'Pending' | 'Failed' | 'Refunded' | 'Disputed' | 'Manual Verified';
 export type OrderDeliveryStatus = 'Pending Manual Send' | 'Delivered & Emailed' | 'Processing Dispatch' | 'Failed';
+
+export type SupportedCurrencyCode = 'USD' | 'GBP' | 'CAD' | 'AUD' | 'EUR' | 'AED' | 'PKR' | 'INR' | 'SAR' | 'NZD';
+
+export interface CountryMarketConfig {
+  countryCode: string;
+  countryName: string;
+  flag: string;
+  currencyCode: SupportedCurrencyCode;
+  currencySymbol: string;
+  currencyName: string;
+  exchangeRate: number; // Relative to 1 USD
+}
+
+export interface CurrencySettings {
+  mode: 'auto_country' | 'forced_currency';
+  forcedCurrencyCode: SupportedCurrencyCode;
+  defaultCountryCode: string;
+  markets: CountryMarketConfig[];
+}
+
+export const DEFAULT_COUNTRY_MARKETS: CountryMarketConfig[] = [
+  {
+    countryCode: 'US',
+    countryName: 'UNITED STATES',
+    flag: '🇺🇸',
+    currencyCode: 'USD',
+    currencySymbol: '$',
+    currencyName: 'US Dollar',
+    exchangeRate: 1.0,
+  },
+  {
+    countryCode: 'UK',
+    countryName: 'UNITED KINGDOM',
+    flag: '🇬🇧',
+    currencyCode: 'GBP',
+    currencySymbol: '£',
+    currencyName: 'British Pound',
+    exchangeRate: 0.79,
+  },
+  {
+    countryCode: 'CA',
+    countryName: 'CANADA',
+    flag: '🇨🇦',
+    currencyCode: 'CAD',
+    currencySymbol: 'CA$',
+    currencyName: 'Canadian Dollar',
+    exchangeRate: 1.36,
+  },
+  {
+    countryCode: 'AU',
+    countryName: 'AUSTRALIA',
+    flag: '🇦🇺',
+    currencyCode: 'AUD',
+    currencySymbol: 'A$',
+    currencyName: 'Australian Dollar',
+    exchangeRate: 1.52,
+  },
+  {
+    countryCode: 'EU',
+    countryName: 'EUROPE (EU)',
+    flag: '🇪🇺',
+    currencyCode: 'EUR',
+    currencySymbol: '€',
+    currencyName: 'Euro',
+    exchangeRate: 0.92,
+  },
+  {
+    countryCode: 'AE',
+    countryName: 'UAE',
+    flag: '🇦🇪',
+    currencyCode: 'AED',
+    currencySymbol: 'AED ',
+    currencyName: 'UAE Dirham',
+    exchangeRate: 3.67,
+  },
+  {
+    countryCode: 'PK',
+    countryName: 'PAKISTAN',
+    flag: '🇵🇰',
+    currencyCode: 'PKR',
+    currencySymbol: 'Rs ',
+    currencyName: 'Pakistani Rupee',
+    exchangeRate: 278.5,
+  },
+  {
+    countryCode: 'IN',
+    countryName: 'INDIA',
+    flag: '🇮🇳',
+    currencyCode: 'INR',
+    currencySymbol: '₹',
+    currencyName: 'Indian Rupee',
+    exchangeRate: 83.5,
+  },
+  {
+    countryCode: 'SA',
+    countryName: 'SAUDI ARABIA',
+    flag: '🇸🇦',
+    currencyCode: 'SAR',
+    currencySymbol: 'SAR ',
+    currencyName: 'Saudi Riyal',
+    exchangeRate: 3.75,
+  },
+  {
+    countryCode: 'NZ',
+    countryName: 'NEW ZEALAND',
+    flag: '🇳🇿',
+    currencyCode: 'NZD',
+    currencySymbol: 'NZ$',
+    currencyName: 'New Zealand Dollar',
+    exchangeRate: 1.64,
+  },
+];
+
+export const SUPPORTED_COUNTRIES: CountryMarketConfig[] = DEFAULT_COUNTRY_MARKETS;
 
 export interface ReportOrder {
   id: string;
@@ -15,6 +130,9 @@ export interface ReportOrder {
   packageId: ReportPlanId;
   packageName: string;
   amount: number;
+  currencyCode?: string;
+  currencySymbol?: string;
+  formattedAmount?: string;
   paymentMethod: string;
   paymentStatus: OrderPaymentStatus | string;
   deliveryStatus: OrderDeliveryStatus | string;
@@ -48,7 +166,8 @@ export interface EditablePackage {
   id: ReportPlanId;
   name: string;
   tagline: string;
-  price: number;
+  price: number; // Base price in USD
+  currencyPrices?: Partial<Record<SupportedCurrencyCode, number>>; // Optional custom price override per currency
   credits: number;
   deliveryTime: string;
   isPopular: boolean;
@@ -107,7 +226,7 @@ export interface GatewaySettings {
     oneClickCheckout: boolean;
   };
   general: {
-    currency: 'USD' | 'CAD' | 'EUR' | 'GBP';
+    currency: SupportedCurrencyCode;
     autoEmailReport: boolean;
   };
 }
@@ -145,7 +264,6 @@ export function validateStripeCredentials(
     };
   }
 
-  // Check prefix based on mode
   if (testMode) {
     if (!pk.startsWith('pk_test_')) {
       return {
@@ -162,7 +280,6 @@ export function validateStripeCredentials(
       };
     }
   } else {
-    // Live mode
     if (!pk.startsWith('pk_live_')) {
       return {
         isValid: false,
@@ -267,9 +384,7 @@ export function validatePaypalCredentials(
   };
 }
 
-import { verifyStripeCredentials, verifyPaypalCredentials } from './paymentCheckService';
-
-// Client-Side Verification for Stripe (calls real https://api.stripe.com/v1/balance)
+// Client-Side Verification for Stripe
 export async function verifyStripeWithServer(
   publishableKey: string,
   secretKey: string,
@@ -283,7 +398,7 @@ export async function verifyStripeWithServer(
   };
 }
 
-// Client-Side Verification for PayPal (calls real PayPal OAuth token endpoint)
+// Client-Side Verification for PayPal
 export async function verifyPaypalWithServer(
   publishableKey: string,
   secretKey: string,
@@ -311,6 +426,8 @@ const INITIAL_ORDERS: ReportOrder[] = [
     packageId: 'silver',
     packageName: 'SILVER PACKAGE',
     amount: 69.99,
+    currencyCode: 'USD',
+    currencySymbol: '$',
     deliveryTime: '6 HOURS DELIVERY',
     paymentMethod: 'Stripe Link',
     paymentStatus: 'Paid',
@@ -335,6 +452,8 @@ const INITIAL_ORDERS: ReportOrder[] = [
     packageId: 'gold',
     packageName: 'GOLD PACKAGE',
     amount: 99.99,
+    currencyCode: 'USD',
+    currencySymbol: '$',
     deliveryTime: 'INSTANT 1-HOUR DELIVERY',
     paymentMethod: 'Credit Card (Stripe)',
     paymentStatus: 'Paid',
@@ -359,6 +478,8 @@ const INITIAL_ORDERS: ReportOrder[] = [
     packageId: 'standard',
     packageName: 'STANDARD PACKAGE',
     amount: 39.99,
+    currencyCode: 'USD',
+    currencySymbol: '$',
     deliveryTime: '12 HOURS DELIVERY',
     paymentMethod: 'PayPal Express',
     paymentStatus: 'Paid',
@@ -383,6 +504,8 @@ const INITIAL_ORDERS: ReportOrder[] = [
     packageId: 'dealer',
     packageName: 'DEALER PACKAGE',
     amount: 149.99,
+    currencyCode: 'USD',
+    currencySymbol: '$',
     deliveryTime: 'INSTANT PRIORITY',
     paymentMethod: 'PayPal Pay Later',
     paymentStatus: 'Paid',
@@ -548,6 +671,14 @@ const INITIAL_GATEWAY_SETTINGS: GatewaySettings = {
   },
 };
 
+// Initial Currency Settings
+const INITIAL_CURRENCY_SETTINGS: CurrencySettings = {
+  mode: 'auto_country',
+  forcedCurrencyCode: 'USD',
+  defaultCountryCode: 'US',
+  markets: DEFAULT_COUNTRY_MARKETS,
+};
+
 // Initial Email Settings
 const INITIAL_EMAIL_SETTINGS: AdminEmailSettings = {
   adminEmail: 'affandark@gmail.com',
@@ -605,6 +736,49 @@ const STORAGE_PACKAGES_KEY = 'wc_admin_packages_v1';
 const STORAGE_GATEWAYS_KEY = 'wc_admin_gateways_v1';
 const STORAGE_EMAIL_SETTINGS_KEY = 'wc_admin_email_settings_v1';
 const STORAGE_EMAIL_LOGS_KEY = 'wc_admin_email_logs_v1';
+const STORAGE_CURRENCY_SETTINGS_KEY = 'wc_admin_currency_settings_v1';
+const STORAGE_VISITOR_COUNTRY_KEY = 'wc_visitor_country_v1';
+const STORAGE_VISITOR_GEO_DETECTED_KEY = 'wc_visitor_geo_detected_v1';
+
+function inferCountryFromBrowser(): string {
+  try {
+    const tz = Intl.DateTimeFormat().resolvedOptions().timeZone || '';
+    if (tz.startsWith('Europe/London') || tz.startsWith('Europe/Belfast')) return 'UK';
+    if (tz.startsWith('Europe/')) return 'EU';
+    if (
+      tz.startsWith('America/Toronto') ||
+      tz.startsWith('America/Vancouver') ||
+      tz.startsWith('America/Edmonton') ||
+      tz.startsWith('America/Winnipeg') ||
+      tz.startsWith('America/Halifax') ||
+      tz.startsWith('America/Montreal')
+    ) {
+      return 'CA';
+    }
+    if (tz.startsWith('Australia/')) return 'AU';
+    if (tz.startsWith('Pacific/Auckland')) return 'NZ';
+    if (tz === 'Asia/Karachi') return 'PK';
+    if (tz === 'Asia/Kolkata' || tz === 'Asia/Calcutta') return 'IN';
+    if (tz === 'Asia/Dubai') return 'AE';
+    if (tz === 'Asia/Riyadh') return 'SA';
+
+    const lang = (navigator.language || '').toUpperCase();
+    if (lang.includes('-GB') || lang.includes('-UK')) return 'UK';
+    if (lang.includes('-CA')) return 'CA';
+    if (lang.includes('-AU')) return 'AU';
+    if (lang.includes('-NZ')) return 'NZ';
+    if (lang.includes('-PK')) return 'PK';
+    if (lang.includes('-IN')) return 'IN';
+    if (lang.includes('-AE')) return 'AE';
+    if (lang.includes('-SA')) return 'SA';
+    if (lang.includes('-DE') || lang.includes('-FR') || lang.includes('-ES') || lang.includes('-IT') || lang.includes('-NL')) {
+      return 'EU';
+    }
+  } catch {
+    // ignore
+  }
+  return 'US';
+}
 
 class AdminStore {
   // Orders
@@ -621,8 +795,11 @@ class AdminStore {
   saveOrder(order: Omit<ReportOrder, 'id' | 'orderNumber' | 'createdAt'>): ReportOrder {
     const orders = this.getOrders();
     const orderNum = Math.floor(10000 + Math.random() * 90000);
+    const activeMarket = this.getActiveMarket();
     const newOrder: ReportOrder = {
       ...order,
+      currencyCode: order.currencyCode || activeMarket.currencyCode,
+      currencySymbol: order.currencySymbol || activeMarket.currencySymbol,
       id: `ord-${Date.now()}`,
       orderNumber: `WC-${orderNum}`,
       createdAt: new Date().toLocaleString('en-US', {
@@ -634,6 +811,7 @@ class AdminStore {
     const updated = [newOrder, ...orders];
     try {
       localStorage.setItem(STORAGE_ORDERS_KEY, JSON.stringify(updated));
+      window.dispatchEvent(new Event('wc_orders_updated'));
     } catch {
       // ignore
     }
@@ -641,16 +819,14 @@ class AdminStore {
     // Auto Dispatch Notification Emails for Orders
     try {
       const emailSettings = this.getEmailSettings();
-      // NOTE: Per policy, DO NOT send auto report emails to customer.
-      // Admin reviews official federal records and sends report manually within delivery time.
-
-      // Dispatch alert to Admin Email only (if notifications enabled)
+      const sym = newOrder.currencySymbol || '$';
+      const code = newOrder.currencyCode || 'USD';
       if (emailSettings.orderNotificationsEnabled) {
         this.sendEmail({
           from: `System Notification <no-reply@wheelclarify.com>`,
           to: emailSettings.adminEmail,
-          subject: `[New Order #${newOrder.orderNumber}] $${newOrder.amount.toFixed(2)} - ${newOrder.packageName} (VIN: ${newOrder.vin})`,
-          body: `New vehicle history report order received:\n\nOrder Number: ${newOrder.orderNumber}\nCustomer: ${newOrder.customerName} (${newOrder.email})\nPhone: ${newOrder.phone || 'N/A'}\nVIN: ${newOrder.vin}\nPackage: ${newOrder.packageName}\nTarget Delivery Time: ${newOrder.deliveryTime || '6 Hours'}\nAmount: $${newOrder.amount.toFixed(2)}\nPayment Method: ${newOrder.paymentMethod}\nPayment Status: ${newOrder.paymentStatus}\nDelivery Status: ${newOrder.deliveryStatus}\n\nACTION REQUIRED: Admin must manually compile records and dispatch report to customer within ${newOrder.deliveryTime || '6 Hours'}.`,
+          subject: `[New Order #${newOrder.orderNumber}] ${sym}${newOrder.amount.toFixed(2)} ${code} - ${newOrder.packageName} (VIN: ${newOrder.vin})`,
+          body: `New vehicle history report order received:\n\nOrder Number: ${newOrder.orderNumber}\nCustomer: ${newOrder.customerName} (${newOrder.email})\nPhone: ${newOrder.phone || 'N/A'}\nVIN: ${newOrder.vin}\nPackage: ${newOrder.packageName}\nTarget Delivery Time: ${newOrder.deliveryTime || '6 Hours'}\nAmount: ${sym}${newOrder.amount.toFixed(2)} ${code}\nPayment Method: ${newOrder.paymentMethod}\nPayment Status: ${newOrder.paymentStatus}\nDelivery Status: ${newOrder.deliveryStatus}\n\nACTION REQUIRED: Admin must manually compile records and dispatch report to customer within ${newOrder.deliveryTime || '6 Hours'}.`,
           type: 'order_report_dispatch',
           orderId: newOrder.id,
         });
@@ -686,6 +862,62 @@ class AdminStore {
     }
   }
 
+  bulkUpdateOrderStatus(
+    orderIds: string[],
+    paymentStatus?: OrderPaymentStatus | string,
+    deliveryStatus?: OrderDeliveryStatus | string
+  ): void {
+    const idSet = new Set(orderIds);
+    const orders = this.getOrders();
+    const updated = orders.map((o) => {
+      if (idSet.has(o.id)) {
+        return {
+          ...o,
+          ...(paymentStatus !== undefined ? { paymentStatus } : {}),
+          ...(deliveryStatus !== undefined ? { deliveryStatus } : {}),
+        };
+      }
+      return o;
+    });
+    try {
+      localStorage.setItem(STORAGE_ORDERS_KEY, JSON.stringify(updated));
+      window.dispatchEvent(new Event('wc_orders_updated'));
+    } catch {
+      // ignore
+    }
+  }
+
+  bulkUpdateOrdersStatus(
+    orderIds: string[],
+    paymentStatus?: OrderPaymentStatus | string,
+    deliveryStatus?: OrderDeliveryStatus | string
+  ): void {
+    this.bulkUpdateOrderStatus(orderIds, paymentStatus, deliveryStatus);
+  }
+
+  deleteOrder(orderId: string): void {
+    const orders = this.getOrders();
+    const updated = orders.filter((o) => o.id !== orderId);
+    try {
+      localStorage.setItem(STORAGE_ORDERS_KEY, JSON.stringify(updated));
+      window.dispatchEvent(new Event('wc_orders_updated'));
+    } catch {
+      // ignore
+    }
+  }
+
+  deleteOrders(orderIds: string[]): void {
+    const idSet = new Set(orderIds);
+    const orders = this.getOrders();
+    const updated = orders.filter((o) => !idSet.has(o.id));
+    try {
+      localStorage.setItem(STORAGE_ORDERS_KEY, JSON.stringify(updated));
+      window.dispatchEvent(new Event('wc_orders_updated'));
+    } catch {
+      // ignore
+    }
+  }
+
   async dispatchManualReportEmail(
     orderId: string,
     customNote?: string
@@ -694,8 +926,10 @@ class AdminStore {
     if (!order) return { success: false, message: 'Order not found' };
 
     const emailSettings = this.getEmailSettings();
+    const sym = order.currencySymbol || '$';
+    const code = order.currencyCode || 'USD';
     const subject = `Your Official Vehicle History Report is Ready [Order #${order.orderNumber}] - VIN: ${order.vin}`;
-    const body = `Dear ${order.customerName},\n\nYour official comprehensive vehicle history audit for ${order.vehicleName} (VIN: ${order.vin}) has been reviewed, certified, and is now ready.\n\nPackage: ${order.packageName}\nOrder Reference: ${order.orderNumber}\nAmount Paid: $${order.amount.toFixed(2)}\nTarget Delivery Window: ${order.deliveryTime || '6 Hours'}\n\n${customNote ? `Special Administrator Note:\n${customNote}\n\n` : ''}Your verified federal and NMVTIS records report has been compiled and certified by our automotive auditing team. You can download and inspect your full records anytime, or reply directly to this email if you require any specialized registry inquiries.\n\nBest regards,\n${emailSettings.senderName}\nInquiries: ${emailSettings.adminEmail}`;
+    const body = `Dear ${order.customerName},\n\nYour official comprehensive vehicle history audit for ${order.vehicleName} (VIN: ${order.vin}) has been reviewed, certified, and is now ready.\n\nPackage: ${order.packageName}\nOrder Reference: ${order.orderNumber}\nAmount Paid: ${sym}${order.amount.toFixed(2)} ${code}\nTarget Delivery Window: ${order.deliveryTime || '6 Hours'}\n\n${customNote ? `Special Administrator Note:\n${customNote}\n\n` : ''}Your verified federal and NMVTIS records report has been compiled and certified by our automotive auditing team. You can download and inspect your full records anytime, or reply directly to this email if you require any specialized registry inquiries.\n\nBest regards,\n${emailSettings.senderName}\nInquiries: ${emailSettings.adminEmail}`;
 
     const log = this.sendEmail({
       from: `${emailSettings.senderName} <${emailSettings.adminEmail}>`,
@@ -742,10 +976,8 @@ class AdminStore {
       // ignore
     }
 
-    // Auto Dispatch Notification Emails for Support Tickets
     try {
       const emailSettings = this.getEmailSettings();
-      // 1. Dispatch notification email to Admin Email (inquiries received)
       if (emailSettings.supportNotificationsEnabled) {
         this.sendEmail({
           from: `${ticket.customerName} <${ticket.email}>`,
@@ -757,7 +989,6 @@ class AdminStore {
         });
       }
 
-      // 2. Dispatch automated receipt confirmation to customer
       if (emailSettings.autoReplyToCustomer) {
         this.sendEmail({
           from: `${emailSettings.senderName} <${emailSettings.adminEmail}>`,
@@ -805,7 +1036,6 @@ class AdminStore {
       // ignore
     }
 
-    // If an admin reply is provided, dispatch official email response from Admin Email to Customer
     if (reply && repliedTicket) {
       try {
         const emailSettings = this.getEmailSettings();
@@ -820,6 +1050,42 @@ class AdminStore {
       } catch (err) {
         console.warn('Admin reply email dispatch error:', err);
       }
+    }
+  }
+
+  bulkUpdateTicketStatus(ticketIds: string[], status: SupportTicket['status']): void {
+    const idSet = new Set(ticketIds);
+    const tickets = this.getTickets();
+    const updated = tickets.map((t) => (idSet.has(t.id) ? { ...t, status } : t));
+    try {
+      localStorage.setItem(STORAGE_TICKETS_KEY, JSON.stringify(updated));
+    } catch {
+      // ignore
+    }
+  }
+
+  bulkUpdateTicketsStatus(ticketIds: string[], status: SupportTicket['status']): void {
+    this.bulkUpdateTicketStatus(ticketIds, status);
+  }
+
+  deleteTicket(ticketId: string): void {
+    const tickets = this.getTickets();
+    const updated = tickets.filter((t) => t.id !== ticketId);
+    try {
+      localStorage.setItem(STORAGE_TICKETS_KEY, JSON.stringify(updated));
+    } catch {
+      // ignore
+    }
+  }
+
+  deleteTickets(ticketIds: string[]): void {
+    const idSet = new Set(ticketIds);
+    const tickets = this.getTickets();
+    const updated = tickets.filter((t) => !idSet.has(t.id));
+    try {
+      localStorage.setItem(STORAGE_TICKETS_KEY, JSON.stringify(updated));
+    } catch {
+      // ignore
     }
   }
 
@@ -884,6 +1150,201 @@ class AdminStore {
       // ignore
     }
     return INITIAL_PACKAGES;
+  }
+
+  // ===========================================================================
+  // CURRENCY & COUNTRY PRICING ENGINE
+  // ===========================================================================
+  getCurrencySettings(): CurrencySettings {
+    try {
+      const data = localStorage.getItem(STORAGE_CURRENCY_SETTINGS_KEY);
+      if (data) {
+        const parsed = JSON.parse(data);
+        // Merge markets to ensure all default markets exist
+        const mergedMarkets = DEFAULT_COUNTRY_MARKETS.map((def) => {
+          const found = parsed.markets?.find((m: CountryMarketConfig) => m.countryCode === def.countryCode);
+          return found ? { ...def, ...found } : def;
+        });
+        return {
+          ...INITIAL_CURRENCY_SETTINGS,
+          ...parsed,
+          markets: mergedMarkets,
+        };
+      }
+    } catch {
+      // ignore
+    }
+    return INITIAL_CURRENCY_SETTINGS;
+  }
+
+  saveCurrencySettings(settings: CurrencySettings): void {
+    try {
+      localStorage.setItem(STORAGE_CURRENCY_SETTINGS_KEY, JSON.stringify(settings));
+      window.dispatchEvent(new Event('wc_currency_updated'));
+      window.dispatchEvent(new Event('wc_packages_updated'));
+    } catch {
+      // ignore
+    }
+  }
+
+  getVisitorCountryCode(): string {
+    try {
+      const stored = localStorage.getItem(STORAGE_VISITOR_COUNTRY_KEY);
+      if (stored) return stored;
+    } catch {
+      // ignore
+    }
+    const inferred = inferCountryFromBrowser();
+    try {
+      localStorage.setItem(STORAGE_VISITOR_COUNTRY_KEY, inferred);
+    } catch {}
+    return inferred;
+  }
+
+  setVisitorCountryCode(countryCode: string): void {
+    try {
+      localStorage.setItem(STORAGE_VISITOR_COUNTRY_KEY, countryCode.toUpperCase());
+      localStorage.setItem(STORAGE_VISITOR_GEO_DETECTED_KEY, 'manual');
+      window.dispatchEvent(new Event('wc_currency_updated'));
+    } catch {
+      // ignore
+    }
+  }
+
+  async detectVisitorCountryByGeo(): Promise<CountryMarketConfig> {
+    const settings = this.getCurrencySettings();
+    try {
+      const manualOrDetected = localStorage.getItem(STORAGE_VISITOR_GEO_DETECTED_KEY);
+      if (manualOrDetected === 'manual') {
+        return this.getActiveMarket();
+      }
+
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 2500);
+      const res = await fetch('https://ipwho.is/', { signal: controller.signal });
+      clearTimeout(timeout);
+      if (res.ok) {
+        const data = await res.json();
+        const iso = (data?.country_code || '').toUpperCase();
+        if (iso) {
+          let mappedCode = iso;
+          if (iso === 'GB') mappedCode = 'UK';
+          const euroCountries = ['DE', 'FR', 'IT', 'ES', 'NL', 'BE', 'AT', 'IE', 'PT', 'FI', 'GR'];
+          if (euroCountries.includes(iso)) mappedCode = 'EU';
+
+          const matched = settings.markets.find((m) => m.countryCode === mappedCode);
+          if (matched) {
+            localStorage.setItem(STORAGE_VISITOR_COUNTRY_KEY, matched.countryCode);
+            localStorage.setItem(STORAGE_VISITOR_GEO_DETECTED_KEY, 'geo');
+            window.dispatchEvent(new Event('wc_currency_updated'));
+            return matched;
+          }
+        }
+      }
+    } catch {
+      // fallback to browser inference silently
+    }
+    return this.getActiveMarket();
+  }
+
+  getActiveMarket(): CountryMarketConfig {
+    const settings = this.getCurrencySettings();
+    if (settings.mode === 'forced_currency') {
+      const forcedMarket =
+        settings.markets.find((m) => m.currencyCode === settings.forcedCurrencyCode) ||
+        settings.markets[0];
+      return forcedMarket;
+    }
+
+    const visitorCountry = this.getVisitorCountryCode();
+    return (
+      settings.markets.find((m) => m.countryCode === visitorCountry) ||
+      settings.markets.find((m) => m.countryCode === settings.defaultCountryCode) ||
+      settings.markets[0]
+    );
+  }
+
+  getPackagePriceInfo(
+    pkg: { id?: string; price: number; currencyPrices?: Partial<Record<SupportedCurrencyCode, number>> },
+    overrideCurrencyCode?: SupportedCurrencyCode
+  ): {
+    amount: number;
+    currencyCode: SupportedCurrencyCode;
+    currencySymbol: string;
+    countryCode: string;
+    countryName: string;
+    flag: string;
+    formatted: string;
+  } {
+    const settings = this.getCurrencySettings();
+    const activeMarket = overrideCurrencyCode
+      ? settings.markets.find((m) => m.currencyCode === overrideCurrencyCode) || this.getActiveMarket()
+      : this.getActiveMarket();
+
+    const targetCurrency = activeMarket.currencyCode;
+
+    // Check if package has a custom override price for this currency
+    let storedPkg: EditablePackage | undefined;
+    if (pkg.id) {
+      storedPkg = this.getPackages().find((p) => p.id === pkg.id);
+    }
+    const customMap = pkg.currencyPrices || storedPkg?.currencyPrices;
+    const customVal = customMap?.[targetCurrency];
+
+    let finalAmount: number;
+    if (typeof customVal === 'number' && !isNaN(customVal) && customVal > 0) {
+      finalAmount = customVal;
+    } else if (targetCurrency === 'USD') {
+      finalAmount = pkg.price;
+    } else {
+      const raw = pkg.price * (activeMarket.exchangeRate || 1);
+      // Round nicely for high-denomination currencies vs decimal currencies
+      if (targetCurrency === 'PKR' || targetCurrency === 'INR') {
+        finalAmount = Math.round(raw);
+      } else {
+        finalAmount = Number(raw.toFixed(2));
+      }
+    }
+
+    const formattedAmount =
+      targetCurrency === 'PKR' || targetCurrency === 'INR'
+        ? `${activeMarket.currencySymbol}${Math.round(finalAmount).toLocaleString()}`
+        : `${activeMarket.currencySymbol}${finalAmount.toFixed(2)}`;
+
+    return {
+      amount: finalAmount,
+      currencyCode: targetCurrency,
+      currencySymbol: activeMarket.currencySymbol,
+      countryCode: activeMarket.countryCode,
+      countryName: activeMarket.countryName,
+      flag: activeMarket.flag,
+      formatted: formattedAmount,
+    };
+  }
+
+  formatPackagePrice(
+    pkg: { id?: string; price: number; currencyPrices?: Partial<Record<SupportedCurrencyCode, number>> },
+    overrideCurrencyCode?: string
+  ): string {
+    return this.getPackagePriceInfo(pkg, overrideCurrencyCode as SupportedCurrencyCode).formatted;
+  }
+
+  getPackagePriceInCurrency(
+    pkg: { id?: string; price: number; currencyPrices?: Partial<Record<SupportedCurrencyCode, number>> },
+    overrideCurrencyCode?: string
+  ): number {
+    return this.getPackagePriceInfo(pkg, overrideCurrencyCode as SupportedCurrencyCode).amount;
+  }
+
+  resetCurrencySettingsToDefault(): CurrencySettings {
+    try {
+      localStorage.removeItem(STORAGE_CURRENCY_SETTINGS_KEY);
+      window.dispatchEvent(new Event('wc_currency_updated'));
+      window.dispatchEvent(new Event('wc_packages_updated'));
+    } catch {
+      // ignore
+    }
+    return INITIAL_CURRENCY_SETTINGS;
   }
 
   getGateways(): GatewaySettings {
@@ -1024,7 +1485,7 @@ class AdminStore {
       }),
     };
 
-    const updated = [newLog, ...logs].slice(0, 50); // keep last 50
+    const updated = [newLog, ...logs].slice(0, 50);
     try {
       localStorage.setItem(STORAGE_EMAIL_LOGS_KEY, JSON.stringify(updated));
       window.dispatchEvent(new Event('wc_emails_updated'));
@@ -1032,14 +1493,12 @@ class AdminStore {
       // ignore
     }
 
-    // Log to console for audit & transparency
     console.info(
       `%c[EMAIL DISPATCH SUCCESS] ✉️ %cTo: ${newLog.to} | From: ${newLog.from}\nSubject: ${newLog.subject}`,
       'color: #10b981; font-weight: bold;',
       'color: #3b82f6;'
     );
 
-    // Asynchronously dispatch via Hostinger native PHP mail gateway (/send-mail.php)
     try {
       fetch('/send-mail.php', {
         method: 'POST',
@@ -1081,6 +1540,7 @@ class AdminStore {
       localStorage.removeItem(STORAGE_TICKETS_KEY);
       localStorage.removeItem(STORAGE_PACKAGES_KEY);
       localStorage.removeItem(STORAGE_GATEWAYS_KEY);
+      localStorage.removeItem(STORAGE_CURRENCY_SETTINGS_KEY);
     } catch {
       // ignore
     }
