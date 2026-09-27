@@ -28,6 +28,7 @@ import { FullVehicleReport, ReportPlanId } from './types';
 import { AlertCircle, X } from 'lucide-react';
 import confetti from 'canvas-confetti';
 import { adminStore } from './services/adminStore';
+import { licenseService } from './services/licenseService';
 
 export type PageView = 'home' | 'report' | 'not-found' | 'checkout' | 'journal' | 'history' | 'pricing' | 'faq' | 'support' | 'admin';
 
@@ -259,6 +260,16 @@ export default function App() {
     // Asynchronously resolve in background during animation
     (async () => {
       try {
+        // 1. Verify Remote License Authorization for VIN Report & PDF Services (/api/vin-report.php)
+        const licenseGate = await licenseService.checkVinReportAccess(cleanQuery, 'lookup');
+        if (!licenseGate.allowed) {
+          setIsSearchingLoading(false);
+          setApiErrorMessage(
+            licenseGate.error || 'VIN Report feature is locked. Active subscription required.'
+          );
+          return;
+        }
+
         if (type === 'vin') {
           if (cleanQuery.length === 17) {
             const report = await decodeVin(cleanQuery);
@@ -328,7 +339,17 @@ export default function App() {
     setSearchResolution(null);
   };
 
-  const handleSelectPlan = (planId: ReportPlanId) => {
+  const handleSelectPlan = async (planId: ReportPlanId) => {
+    const paymentGate = await licenseService.checkPaymentGatewayAccess({
+      gateway: 'checkout',
+      vin: currentReport?.specs?.vin || '',
+    });
+    if (!paymentGate.allowed) {
+      setApiErrorMessage(
+        paymentGate.error || 'Payment Gateway is locked. Active subscription required.'
+      );
+      return;
+    }
     setSelectedPlanForCheckout(planId);
     navigateTo('checkout');
   };

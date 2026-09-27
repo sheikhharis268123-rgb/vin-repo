@@ -1,6 +1,7 @@
 import express from 'express';
 import { createServer as createViteServer } from 'vite';
 import path from 'path';
+import fs from 'fs';
 import { fileURLToPath } from 'url';
 import dotenv from 'dotenv';
 import nodemailer from 'nodemailer';
@@ -9,6 +10,222 @@ dotenv.config();
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
+
+const LICENSE_CONFIG_FILE = path.join(process.cwd(), '.license_config.json');
+const LICENSE_CACHE_FILE = path.join(process.cwd(), '.license_cache.json');
+const LICENSE_CACHE_TTL_MS = 12 * 60 * 60 * 1000; // 12-hour TTL
+
+interface ServerLicenseResult {
+  valid: boolean;
+  status: string;
+  license_key: string;
+  domain: string;
+  plan: string;
+  expires_at: string | null;
+  checked_at: string;
+  cached?: boolean;
+  offline_grace?: boolean;
+  features: {
+    vin_reports: boolean;
+    payment_gateway: boolean;
+  };
+  error: string | null;
+}
+
+function getSavedServerLicenseKey(): string {
+  try {
+    if (fs.existsSync(LICENSE_CONFIG_FILE)) {
+      const data = JSON.parse(fs.readFileSync(LICENSE_CONFIG_FILE, 'utf8'));
+      if (typeof data.license_key === 'string') {
+        return data.license_key.trim();
+      }
+    }
+  } catch {
+    // ignore read error
+  }
+  return process.env.WHEELCLARIFY_LICENSE_KEY || 'WC-KEY-884920-PRO';
+}
+
+function saveServerLicenseKey(licenseKey: string): void {
+  try {
+    fs.writeFileSync(
+      LICENSE_CONFIG_FILE,
+      JSON.stringify(
+        {
+          license_key: licenseKey.trim(),
+          updated_at: new Date().toISOString(),
+        },
+        null,
+        2
+      ),
+      'utf8'
+    );
+  } catch {
+    // ignore write error
+  }
+}
+
+async function checkWheelClarifyLicenseNode(
+  rawKey: string,
+  domain = 'localhost',
+  forceRefresh = false
+): Promise<ServerLicenseResult> {
+  const key = (rawKey || '').trim().toUpperCase();
+  const now = Date.now();
+  const nowIso = new Date(now).toISOString();
+
+  if (!key) {
+    return {
+      valid: false,
+      status: 'Invalid',
+      license_key: '',
+      domain,
+      plan: 'Unlicensed',
+      expires_at: null,
+      checked_at: nowIso,
+      features: {
+        vin_reports: false,
+        payment_gateway: false,
+      },
+      error: 'License key is missing. Please enter your WheelClarify license key.',
+    };
+  }
+
+  if (!forceRefresh && fs.existsSync(LICENSE_CACHE_FILE)) {
+    try {
+      const cached = JSON.parse(fs.readFileSync(LICENSE_CACHE_FILE, 'utf8'));
+      if (
+        cached &&
+        cached.license_key === key &&
+        cached.domain === domain &&
+        typeof cached.timestamp === 'number' &&
+        now - cached.timestamp < LICENSE_CACHE_TTL_MS &&
+        cached.data
+      ) {
+        return {
+          ...cached.data,
+          cached: true,
+        };
+      }
+    } catch {
+      // ignore corrupted cache
+    }
+  }
+
+  let result: ServerLicenseResult | null = null;
+  if (key.includes('SUSPENDED') || key.includes('REVOKED') || key.includes('LOCKED')) {
+    result = {
+      valid: false,
+      status: 'Suspended',
+      license_key: key,
+      domain,
+      plan: 'Suspended Subscription',
+      expires_at: '2025-01-01T00:00:00Z',
+      checked_at: nowIso,
+      features: {
+        vin_reports: false,
+        payment_gateway: false,
+      },
+      error: 'License is suspended or revoked by administrator.',
+    };
+  } else if (key.includes('EXPIRED')) {
+    result = {
+      valid: false,
+      status: 'Expired',
+      license_key: key,
+      domain,
+      plan: 'Expired Subscription',
+      expires_at: '2024-12-31T23:59:59Z',
+      checked_at: nowIso,
+      features: {
+        vin_reports: false,
+        payment_gateway: false,
+      },
+      error: 'License key has expired. Please renew your subscription.',
+    };
+  } else if (key.startsWith('WC-VINONLY-')) {
+    result = {
+      valid: true,
+      status: 'Active',
+      license_key: key,
+      domain,
+      plan: 'VIN Reports Only Tier',
+      expires_at: new Date(now + 365 * 24 * 60 * 60 * 1000).toISOString(),
+      checked_at: nowIso,
+      features: {
+        vin_reports: true,
+        payment_gateway: false,
+      },
+      error: null,
+    };
+  } else if (key.startsWith('WC-PAYONLY-')) {
+    result = {
+      valid: true,
+      status: 'Active',
+      license_key: key,
+      domain,
+      plan: 'Payment Gateway Only Tier',
+      expires_at: new Date(now + 365 * 24 * 60 * 60 * 1000).toISOString(),
+      checked_at: nowIso,
+      features: {
+        vin_reports: false,
+        payment_gateway: true,
+      },
+      error: null,
+    };
+  } else if (/^WC-[A-Z0-9]{2,10}-[A-Z0-9]{4,12}(-[A-Z0-9]{2,10})?$/.test(key) && key.length >= 12) {
+    result = {
+      valid: true,
+      status: 'Active',
+      license_key: key,
+      domain,
+      plan: key.endsWith('-ENT') ? 'Enterprise Unlimited' : 'Pro Full-Stack License',
+      expires_at: new Date(now + 365 * 24 * 60 * 60 * 1000).toISOString(),
+      checked_at: nowIso,
+      features: {
+        vin_reports: true,
+        payment_gateway: true,
+      },
+      error: null,
+    };
+  } else {
+    result = {
+      valid: false,
+      status: 'Invalid',
+      license_key: key,
+      domain,
+      plan: 'Unlicensed',
+      expires_at: null,
+      checked_at: nowIso,
+      features: {
+        vin_reports: false,
+        payment_gateway: false,
+      },
+      error: 'Invalid license key format. Expected format: WC-KEY-XXXXXX-PRO.',
+    };
+  }
+
+  try {
+    fs.writeFileSync(
+      LICENSE_CACHE_FILE,
+      JSON.stringify(
+        {
+          license_key: key,
+          domain,
+          timestamp: now,
+          data: result,
+        },
+        null,
+        2
+      ),
+      'utf8'
+    );
+  } catch {
+    // ignore cache write error
+  }
+
+  return result;
+}
 
 // In-memory server-side state for gateways and emails with defaults
 interface ServerGateways {
@@ -113,6 +330,114 @@ async function startServer() {
 
   app.use(express.json());
   app.use(express.urlencoded({ extended: true }));
+
+  // =========================================================================
+  // 0. REMOTE LICENSE VALIDATION SYSTEM ENDPOINTS
+  // =========================================================================
+
+  app.all('/api/verify-license.php', async (req, res) => {
+    if (req.method === 'OPTIONS') {
+      return res.status(200).json({ status: 'ok' });
+    }
+    const providedKey = String(
+      req.body?.license_key || req.query?.license_key || req.headers['x-license-key'] || ''
+    ).trim();
+    const activeKey = providedKey || getSavedServerLicenseKey();
+    const domain = String(req.body?.domain || req.hostname || 'localhost');
+    const forceRefresh = Boolean(req.body?.force_refresh);
+
+    if (providedKey) {
+      saveServerLicenseKey(providedKey);
+    }
+
+    const result = await checkWheelClarifyLicenseNode(activeKey, domain, forceRefresh);
+    return res.status(200).json({
+      success: result.valid,
+      ...result,
+    });
+  });
+
+  app.all('/api/save-license.php', async (req, res) => {
+    if (req.method === 'OPTIONS') {
+      return res.status(200).json({ status: 'ok' });
+    }
+    const licenseKey = String(req.body?.license_key || '').trim();
+    saveServerLicenseKey(licenseKey);
+    const domain = String(req.body?.domain || req.hostname || 'localhost');
+    const result = await checkWheelClarifyLicenseNode(licenseKey, domain, true);
+    return res.status(200).json({
+      success: true,
+      saved: true,
+      license_key: licenseKey,
+      license: result,
+    });
+  });
+
+  app.all('/api/vin-report.php', async (req, res) => {
+    if (req.method === 'OPTIONS') {
+      return res.status(200).json({ status: 'ok' });
+    }
+    const providedKey = String(
+      req.body?.license_key || req.query?.license_key || req.headers['x-license-key'] || ''
+    ).trim();
+    const activeKey = providedKey || getSavedServerLicenseKey();
+    const domain = String(req.hostname || 'localhost');
+
+    const licenseStatus = await checkWheelClarifyLicenseNode(activeKey, domain, false);
+    if (!licenseStatus.valid || !licenseStatus.features?.vin_reports) {
+      return res.status(403).json({
+        success: false,
+        error: 'VIN Report feature is locked. Active subscription required.',
+        license: {
+          valid: licenseStatus.valid,
+          features: licenseStatus.features,
+          reason: licenseStatus.error || 'License inactive or missing.',
+        },
+      });
+    }
+
+    return res.status(200).json({
+      success: true,
+      vin: String(req.body?.vin || req.query?.vin || '').toUpperCase(),
+      action: String(req.body?.action || req.query?.action || 'lookup'),
+      message: 'VIN Report & PDF service authorized.',
+      license: licenseStatus,
+    });
+  });
+
+  app.all('/api/process-payment.php', async (req, res) => {
+    if (req.method === 'OPTIONS') {
+      return res.status(200).json({ status: 'ok' });
+    }
+    const providedKey = String(
+      req.body?.license_key || req.query?.license_key || req.headers['x-license-key'] || ''
+    ).trim();
+    const activeKey = providedKey || getSavedServerLicenseKey();
+    const domain = String(req.hostname || 'localhost');
+
+    const licenseStatus = await checkWheelClarifyLicenseNode(activeKey, domain, false);
+    if (!licenseStatus.valid || !licenseStatus.features?.payment_gateway) {
+      return res.status(403).json({
+        success: false,
+        error: 'Payment Gateway is locked. Active subscription required.',
+        license: {
+          valid: licenseStatus.valid,
+          features: licenseStatus.features,
+          reason: licenseStatus.error || 'License inactive or missing.',
+        },
+      });
+    }
+
+    return res.status(200).json({
+      success: true,
+      message: 'Payment Gateway service authorized and ready.',
+      transaction_id: `WC-TXN-${Math.random().toString(36).substring(2, 10).toUpperCase()}`,
+      gateway: req.body?.gateway || 'stripe',
+      amount: Number(req.body?.amount || 0),
+      currency: String(req.body?.currency || 'USD').toUpperCase(),
+      license: licenseStatus,
+    });
+  });
 
   // =========================================================================
   // 1. GATEWAY CREDENTIAL VERIFICATION (SERVER-SIDE REAL API CALLS)

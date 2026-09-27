@@ -61,6 +61,9 @@ import {
 } from '../services/adminStore';
 import { emailService } from '../services/emailService';
 import { verifyStripeCredentials, verifyPaypalCredentials } from '../services/paymentCheckService';
+import { licenseService, LicenseState } from '../services/licenseService';
+// @ts-ignore - JSX component requested by specification
+import { AdminLicenseSettings } from '../components/AdminLicenseSettings.jsx';
 import { ReportPlanId } from '../types';
 
 interface AdminPageProps {
@@ -86,7 +89,8 @@ export const AdminPage: React.FC<AdminPageProps> = ({
   const [authError, setAuthError] = useState<string | null>(null);
 
   // Active Tab
-  const [activeTab, setActiveTab] = useState<'overview' | 'orders' | 'tickets' | 'packages' | 'currency' | 'gateways' | 'emails'>('overview');
+  const [activeTab, setActiveTab] = useState<'overview' | 'orders' | 'tickets' | 'packages' | 'currency' | 'gateways' | 'emails' | 'license'>('overview');
+  const [licenseStatus, setLicenseStatus] = useState<LicenseState>(() => licenseService.getLicenseState());
 
   // State loaded from adminStore
   const [orders, setOrders] = useState<ReportOrder[]>([]);
@@ -1048,6 +1052,27 @@ export const AdminPage: React.FC<AdminPageProps> = ({
               <span>Email &amp; Communications</span>
               <span className="ml-1 px-1.5 py-0.2 rounded-full text-[10px] bg-amber-100 text-amber-900 font-mono font-bold">
                 {emailSettings.adminEmail ? 'Connected' : 'Setup'}
+              </span>
+            </button>
+
+            <button
+              onClick={() => setActiveTab('license')}
+              className={`px-4 py-3 border-b-2 flex items-center gap-2 transition-all cursor-pointer shrink-0 ${
+                activeTab === 'license'
+                  ? 'border-slate-900 text-slate-900'
+                  : 'border-transparent text-slate-500 hover:text-slate-800'
+              }`}
+            >
+              <Key className="w-4 h-4 text-amber-500" />
+              <span>License &amp; API Key</span>
+              <span
+                className={`ml-1 px-1.5 py-0.2 rounded-full text-[10px] font-mono font-bold ${
+                  licenseStatus.valid
+                    ? 'bg-emerald-100 text-emerald-800'
+                    : 'bg-rose-100 text-rose-800'
+                }`}
+              >
+                {licenseStatus.valid ? 'Active' : 'Locked'}
               </span>
             </button>
           </nav>
@@ -4172,6 +4197,15 @@ export const AdminPage: React.FC<AdminPageProps> = ({
               </div>
             )}
           </div>
+        )}
+
+        {/* =========================================================================
+            TAB 8: REMOTE LICENSE VALIDATION SETTINGS
+           ========================================================================= */}
+        {activeTab === 'license' && (
+          <AdminLicenseSettings
+            onLicenseChange={(updatedState: LicenseState) => setLicenseStatus(updatedState)}
+          />
         )}
       </main>
     </div>
